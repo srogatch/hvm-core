@@ -104,12 +104,12 @@ const Tag CT4 = 0xE; // main port of con node 4
 const Tag CT5 = 0xF; // main port of con node 5
 
 // Special values
-const u32 ROOT = 0x0 | VR2;  // pointer to root port
-const u32 NONE = 0x00000000; // empty value, not allocated
+const u32 ROOT =    0x0 | VR2;  // pointer to root port
+const u32 NONE =    0x00000000; // empty value, not allocated
 const u32 NO_LINK = 0xFFFFFFFD; // no allocation linkage info in this node (it's the beginning or the end of a list)
-const u32 GONE = 0xFFFFFFFE; // node has been moved to redex bag by paired thread
-const u32 LOCK = 0xFFFFFFFF; // value taken by another thread, will be replaced soon
-const u32 FAIL = 0xFFFFFFFF; // signals failure to allocate
+const u32 GONE =    0xFFFFFFFE; // node has been moved to redex bag by paired thread
+const u32 LOCK =    0xFFFFFFFF; // value taken by another thread, will be replaced soon
+const u32 FAIL =    0xFFFFFFFF; // signals failure to allocate
 
 // Unit types
 const u32 A1 = 0; // focuses on the A node, P1 port
@@ -322,12 +322,14 @@ __device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
   u8 cardinality;
   u32 end;
   u32 reverse;
+  bool haveReverse;
   const Ptr succPtr = nodeBegin.ports[CARDINALITY_LINK];
   const Ptr nbsl = nodeBegin.ports[SPACE_LINK];
   if(tag(nbsl) == REVERSE_TAG) {
     end = begin;
     cardinality = 0;
     reverse = val(nbsl);
+    haveReverse = (reverse != NO_REVERSE);
     if(succPtr != NO_LINK) {
       net->heap[val(succPtr)].ports[SPACE_LINK] = nbsl;
     }
@@ -337,16 +339,17 @@ __device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
     assert(net->heap[end].ports[SPACE_LINK] == mkptr(SENTINEL_TAG, begin));
     cardinality = get_cardinality(begin, end);
     const Ptr revPtr = net->heap[end].ports[CARDINALITY_LINK];
+    haveReverse = (revPtr != NO_LINK);
     reverse = val(revPtr);
     if(succPtr != NO_LINK) {
       const u32 succEnd = val(net->heap[val(succPtr)].ports[SPACE_LINK]);
       net->heap[succEnd].ports[CARDINALITY_LINK] = revPtr;
     }
   }
-  if(mkptr(SENTINEL_TAG, reverse) == NO_LINK) {
-    net->cardinalities[LIMIT_CARDINALITY * unit->uid + cardinality] = succPtr;
-  } else {
+  if(haveReverse) {
     net->heap[reverse].ports[CARDINALITY_LINK] = succPtr;
+  } else {
+    net->cardinalities[LIMIT_CARDINALITY * unit->uid + cardinality] = succPtr;
   }
 }
 
@@ -660,8 +663,9 @@ __device__ bool deref(Unit* unit, Net* net, Book* book, Ptr* ref, Ptr up) {
 
     // Link root.
     if (unit->qid == A1 && is_var(*ref)) {
+      const Ptr orig = *ref;
       *target(net, *ref) = up;
-      check_release(unit, net, *ref);
+      check_release(unit, net, orig);
     }
   }
 
@@ -748,7 +752,8 @@ __device__ void atomic_join(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
         Ptr neo_ptr = undir(trg_ptr);
         Ptr updated = atomicCAS(ste_ref, ste_ptr, neo_ptr);
         if (updated == ste_ptr) {
-          *trg_ref = 0;
+          *trg_ref = NONE;
+          check_release(unit, net, ste_ptr);
           continue;
         }
       }
@@ -810,7 +815,8 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
       // Second to arrive clears up the memory.
       } else {
         *x_ref = 0;
-        replace(y_ref, GONE, 0);
+        replace(y_ref, GONE, NONE);
+        check_release(unit, net, );
         return;
       }
     }
