@@ -72,7 +72,8 @@ const u32 HEAD_SIZE    = 1 << HEAD_SIZE_L2;
 const u32 EXPANSIONS_PER_SQUAD = 16;
 
 constexpr const u8 LIMIT_CARDINALITY = 8;
-constexpr const u32 HEAP_CARDINALITIES = LIMIT_CARDINALITY * SQUAD_TOTAL;
+constexpr const u8 CARD_SLOTS = LIMIT_CARDINALITY+1;
+constexpr const u32 HEAP_CARDINALITIES = CARD_SLOTS * SQUAD_TOTAL;
 constexpr const u8 CARDINALITY_LINK = 0;
 constexpr const u8 SPACE_LINK = 1;
 constexpr const u8 SENTINEL_TAG = 0xF;
@@ -317,6 +318,24 @@ __host__ __device__ inline u8 get_cardinality(const u32 begin, const u32 end) {
   return get_cardinality(sizeMinus1);
 }
 
+__device__ void acquire_area_by_index(Net* net, const u32 iArea) {
+  while(atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, LOCK) == LOCK);
+}
+
+__device__ void acquire_area_by_node(Net* net, const u32 iNode) {
+  const u32 iArea = iNode / AREA_SIZE;
+  acquire_area_by_index(net, iArea);
+}
+
+__device__ void release_area_by_index(Net* net, const u32 iArea) {
+  atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, NONE);
+}
+
+__device__ void release_area_by_node(Net* net, const u32 iNode) {
+  const u32 iArea = iNode / AREA_SIZE;
+  release_area_by_index(net, iArea);
+}
+
 __device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
   Node& nodeBegin = net->heap[begin];
   u8 cardinality;
@@ -349,7 +368,7 @@ __device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
   if(haveReverse) {
     net->heap[reverse].ports[CARDINALITY_LINK] = succPtr;
   } else {
-    net->cardinalities[LIMIT_CARDINALITY * unit->uid + cardinality] = succPtr;
+    net->cardinalities[CARD_SLOTS * unit->uid + cardinality] = succPtr;
   }
 }
 
@@ -361,7 +380,7 @@ __device__ inline void add_region(Unit* unit, Net* net, const u32 begin, const u
   const u8 cardinality = get_cardinality(begin, end);
   Node& nodeBegin = net->heap[begin];
   Node& nodeEnd = net->heap[end];
-  Ptr& head = net->cardinalities[LIMIT_CARDINALITY * unit->uid + cardinality];
+  Ptr& head = net->cardinalities[CARD_SLOTS * unit->uid + cardinality];
   nodeBegin.ports[CARDINALITY_LINK] = head;
   if(cardinality == 0) {
     nodeBegin.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
@@ -387,77 +406,75 @@ __device__ inline void add_region_ptrs(Unit* unit, Net* net, const Ptr beginPtr,
   return add_region(unit, net, val(beginPtr), val(endPtr));
 }
 
-__device__ inline void check_release(Unit* unit, Net* net, const Ptr pNode) {
-  u32 iNode = val(pNode);
+__device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
+  const u32 iNode = (reinterpret_cast<uint8_t*>(ref) - reinterpret_cast<uint8_t*>(net->heap)) / sizeof(Node);
+  assert(0 < iNode && iNode < 0xFFFFFFF);
   Node &node = net->heap[iNode];
-  for(u8 i=0; i<SQUAD_SIZE; i++) {
-    if(i == unit->qid) {
-      if(node.ports[P1] != NONE || node.ports[P2] != NONE) {
-        continue;
-      }
-      assert(0 < iNode && iNode < 0xFFFFFFF);
-      Node &prev = net->heap[iNode-1];
-      Node &next = net->heap[iNode+1];
-      Ptr prevCl = prev.ports[CARDINALITY_LINK];
-      Ptr nextCl = next.ports[CARDINALITY_LINK];
-      const u8 theCase = ((tag(prevCl) == SENTINEL_TAG && prevCl <= NO_LINK && (iNode % AREA_SIZE != 0)) ? 1 : 0)
-        | ((tag(nextCl) == SENTINEL_TAG && nextCl <= NO_LINK && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
-      switch(theCase) {
-      case 0: {
-        add_region(unit, net, iNode, iNode);
-        break;
-      }
-      case 1: {
-        u32 begin;
-        if(tag(prev.ports[SPACE_LINK]) == REVERSE_TAG) {
-          begin = iNode-1;
-        } else {
-          begin = val(prev.ports[SPACE_LINK]);
-        }
-        remove_region(unit, net, begin);
-        add_region(unit, net, begin, iNode);
-        break;
-      }
-      case 2: {
-        u32 end;
-        if(tag(next.ports[SPACE_LINK]) == REVERSE_TAG) {
-          end = iNode+1;
-        } else {
-          end = val(next.ports[SPACE_LINK]);
-        }
-        remove_region(unit, net, iNode+1);
-        add_region(unit, net, iNode, end);
-        break;
-      }
-      case 3: {
-        u32 begin, end;
-        if(tag(prev.ports[SPACE_LINK]) == REVERSE_TAG) {
-          begin = iNode-1;
-        } else {
-          begin = val(prev.ports[SPACE_LINK]);
-        }
-        if(tag(next.ports[SPACE_LINK]) == REVERSE_TAG) {
-          end = iNode+1;
-        } else {
-          end = val(next.ports[SPACE_LINK]);
-        }
-        remove_region(unit, net, begin);
-        remove_region(unit, net, iNode+1);
-        add_region(unit, net, begin, end);
-        break;
-      } }
+  acquire_area_by_node(net, iNode);
+  if(node.ports[P1] == NONE && node.ports[P2] == NONE) {
+    Node &prev = net->heap[iNode-1];
+    Node &next = net->heap[iNode+1];
+    Ptr prevCl = prev.ports[CARDINALITY_LINK];
+    Ptr nextCl = next.ports[CARDINALITY_LINK];
+    const u8 theCase = ((tag(prevCl) == SENTINEL_TAG && prevCl <= NO_LINK && (iNode % AREA_SIZE != 0)) ? 1 : 0)
+      | ((tag(nextCl) == SENTINEL_TAG && nextCl <= NO_LINK && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
+    switch(theCase) {
+    case 0: {
+      add_region(unit, net, iNode, iNode);
+      break;
     }
+    case 1: {
+      u32 begin;
+      if(tag(prev.ports[SPACE_LINK]) == REVERSE_TAG) {
+        begin = iNode-1;
+      } else {
+        begin = val(prev.ports[SPACE_LINK]);
+      }
+      remove_region(unit, net, begin);
+      add_region(unit, net, begin, iNode);
+      break;
+    }
+    case 2: {
+      u32 end;
+      if(tag(next.ports[SPACE_LINK]) == REVERSE_TAG) {
+        end = iNode+1;
+      } else {
+        end = val(next.ports[SPACE_LINK]);
+      }
+      remove_region(unit, net, iNode+1);
+      add_region(unit, net, iNode, end);
+      break;
+    }
+    case 3: {
+      u32 begin, end;
+      if(tag(prev.ports[SPACE_LINK]) == REVERSE_TAG) {
+        begin = iNode-1;
+      } else {
+        begin = val(prev.ports[SPACE_LINK]);
+      }
+      if(tag(next.ports[SPACE_LINK]) == REVERSE_TAG) {
+        end = iNode+1;
+      } else {
+        end = val(next.ports[SPACE_LINK]);
+      }
+      remove_region(unit, net, begin);
+      remove_region(unit, net, iNode+1);
+      add_region(unit, net, begin, end);
+      break;
+    } }
   }
+  release_area_by_node(net, iNode);
 }
 
 // Allocates one node in memory
 __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
   u32 propagate = FAIL;
   if((unit->tid & 3) == 0) {
+    acquire_area_by_index(net, unit->uid);
     const u8 startCard = get_cardinality(size-1);
     u8 i;
     for(i=startCard; i<LIMIT_CARDINALITY; i++) {
-      const Ptr begin = net->cardinalities[unit->uid*LIMIT_CARDINALITY + i];
+      const Ptr begin = net->cardinalities[unit->uid*CARD_SLOTS + i];
       if(begin != NO_LINK) {
         propagate = val(begin);
         break;
@@ -481,6 +498,7 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
       }
       break;
     }
+    release_area_by_index(net, unit->uid);
   }
   const u32 ans = __shfl_sync(unit->mask, propagate, unit->tid & (~3u));
   if(ans != FAIL) {
@@ -663,9 +681,9 @@ __device__ bool deref(Unit* unit, Net* net, Book* book, Ptr* ref, Ptr up) {
 
     // Link root.
     if (unit->qid == A1 && is_var(*ref)) {
-      const Ptr orig = *ref;
-      *target(net, *ref) = up;
-      check_release(unit, net, orig);
+      Ptr* t = target(net, *ref);
+      *t = up;
+      check_release(unit, net, t);
     }
   }
 
@@ -753,7 +771,7 @@ __device__ void atomic_join(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
         Ptr updated = atomicCAS(ste_ref, ste_ptr, neo_ptr);
         if (updated == ste_ptr) {
           *trg_ref = NONE;
-          check_release(unit, net, ste_ptr);
+          check_release(unit, net, trg_ref);
           continue;
         }
       }
@@ -816,7 +834,7 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
       } else {
         *x_ref = 0;
         replace(y_ref, GONE, NONE);
-        check_release(unit, net, );
+        check_release(unit, net, y_ref);
         return;
       }
     }
@@ -839,7 +857,7 @@ __device__ void atomic_subst(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr a_
     Ptr got = atomicCAS(target(net, a_ptr), a_dir, b_ptr);
     if (got == a_dir) {
       atomicExch(a_ref, NONE);
-      check_release(unit, net, a_dir);
+      check_release(unit, net, a_ref);
     } else if (is_var(b_ptr)) {
       atomicExch(a_ref, redir(b_ptr));
       atomic_join(unit, net, book, a_ptr, a_ref, redir(b_ptr));
@@ -852,10 +870,10 @@ __device__ void atomic_subst(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr a_
       put_redex(unit, b_ptr, a_ptr); // FIXME: swapping bloats rbag; why?
     }
     atomicExch(a_ref, NONE);
-    check_release(unit, net, a_dir);
+    check_release(unit, net, a_ref);
   } else {
     atomicExch(a_ref, NONE);
-    check_release(unit, net, a_dir);
+    check_release(unit, net, a_ref);
   }
 }
 
@@ -1147,7 +1165,8 @@ __host__ Net* mknet(u32 root_fn, u32* jump_data, u32 jump_data_size) {
     net->heap[end].ports[CARDINALITY_LINK] = NO_LINK;
     // Fill cardinalities
     const u8 cardinality = get_cardinality(begin, end);
-    net->cardinalities[i*LIMIT_CARDINALITY + cardinality] = mkptr(SENTINEL_TAG, begin);
+    net->cardinalities[i*CARD_SLOTS + cardinality] = mkptr(SENTINEL_TAG, begin);
+    net->cardinalities[i*CARD_SLOTS + LIMIT_CARDINALITY] = NONE; // mutex
   }
   return net;
 }
