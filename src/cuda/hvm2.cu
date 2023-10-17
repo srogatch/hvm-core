@@ -351,7 +351,29 @@ __device__ inline void remove_region_ptr(Unit* unit, Net* net, const Ptr beginPt
 }
 
 __device__ inline void add_region(Unit* unit, Net* net, const u32 begin, const u32 end) {
-  // TODO(srogatch): implement
+  const u8 cardinality = get_cardinality(begin, end);
+  Node& nodeBegin = net->heap[begin];
+  Node& nodeEnd = net->heap[end];
+  Ptr& head = net->cardinalities[LIMIT_CARDINALITY * unit->uid + cardinality];
+  nodeBegin.ports[CARDINALITY_LINK] = head;
+  if(cardinality == 0) {
+    nodeBegin.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
+    if(head != FAIL) {
+      Node& nodeSucc = net->heap[val(head)];
+      nodeSucc.ports[SPACE_LINK] = mkptr(REVERSE_TAG, begin);
+    }
+  }
+  else {
+    nodeBegin.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, end);
+    nodeEnd.ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, NO_REVERSE);
+    nodeEnd.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, begin);
+    if(head != FAIL) {
+      const u32 succBegin = val(head);
+      const u32 succEnd = val(net->heap[succBegin].ports[SPACE_LINK]);
+      net->heap[succEnd].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, begin);
+    }
+  }
+  head = mkptr(SENTINEL_TAG, begin);
 }
 
 __device__ inline void add_region_ptrs(Unit* unit, Net* net, const Ptr beginPtr, const Ptr endPtr) {
@@ -379,127 +401,41 @@ __device__ inline void check_release(Unit* unit, Net* net, const Ptr pNode) {
       }
       case 1: {
         u32 begin;
-        u8 oldCard;
-        u8 newCard;
-        u32 reverse;
         if(tag(prev.ports[SPACE_LINK]) == REVERSE_TAG) {
           begin = iNode-1;
-          oldCard = 0;
-          newCard = 1;
-          reverse = val(prev.ports[SPACE_LINK]);
         } else {
           begin = val(prev.ports[SPACE_LINK]);
-          oldCard = get_cardinality(begin, iNode-1);
-          newCard = get_cardinality(begin, iNode);
-          reverse = val(prev.ports[CARDINALITY_LINK]);
         }
-        node.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, begin);
-        node.ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, reverse);
-        Node& head = net->heap[begin];
-        head.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, iNode);
-        if(oldCard != newCard) {
-          const Ptr listSuccPtr = head.ports[CARDINALITY_LINK];
-          if(listSuccPtr != FAIL) {
-            const u32 listSucc = val(listSuccPtr);
-            if(oldCard == 0) {
-              net->heap[listSucc].ports[SPACE_LINK] = mkptr(REVERSE_TAG, reverse);
-            }
-            else {
-              const u32 succEnd = val(net->heap[listSucc].ports[SPACE_LINK]);
-              net->heap[succEnd].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, reverse);
-            }
-          }
-          net->cardinalities[unit->uid * LIMIT_CARDINALITY + oldCard] = head.ports[CARDINALITY_LINK];
-          node.ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, NO_REVERSE);
-          Ptr& ncList = net->cardinalities[unit->uid * LIMIT_CARDINALITY + newCard];
-          head.ports[CARDINALITY_LINK] = ncList;
-          if(ncList != FAIL) {
-            const u32 listSucc = val(ncList);
-            const u32 succEnd = val(net->heap[listSucc].ports[SPACE_LINK]);
-            net->heap[succEnd].ports[CARDINALITY_LINK] = ncList;
-          }
-          ncList = mkptr(SENTINEL_TAG, begin);
-        }
+        remove_region(unit, net, begin, iNode-1);
+        add_region(unit, net, begin, iNode);
         break;
       }
       case 2: {
         u32 end;
-        u8 oldCard;
-        u8 newCard;
-        u32 reverse;
         if(tag(next.ports[SPACE_LINK]) == REVERSE_TAG) {
           end = iNode+1;
-          oldCard = 0;
-          newCard = 1;
-          reverse = val(next.ports[SPACE_LINK]);
         } else {
           end = val(next.ports[SPACE_LINK]);
-          oldCard = get_cardinality(iNode+1, end);
-          newCard = get_cardinality(iNode, end);
-          reverse = val(net->heap[end].ports[CARDINALITY_LINK]);
         }
-        Node& tail = net->heap[end];
-        node.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, end);
-        tail.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, iNode);
-        if(newCard == oldCard) {
-          node.ports[CARDINALITY_LINK] = mkptr(next.ports[CARDINALITY_LINK]);
-          tail.ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, reverse);
-          if(reverse == NO_REVERSE) {
-            net->cardinalities[unit->uid * LIMIT_CARDINALITY + oldCard] = mkptr(SENTINEL_TAG, iNode);
-          } else {
-            net->heap[reverse].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, iNode);
-          }
-        } else {
-          const Ptr oldSuccPtr = next.ports[CARDINALITY_LINK];
-          if(oldCard == 0) {
-            if(reverse == NO_REVERSE) {
-              net->cardinalities[unit->uid * LIMIT_CARDINALITY + oldCard] = oldSuccPtr;
-            }
-            else {
-              net->heap[reverse].ports[CARDINALITY_LINK] = oldSuccPtr;
-            }
-            net->heap[val(oldSuccPtr)].ports[SPACE_LINK] = mkptr(REVERSE_TAG, reverse);
-          } else {
-            if(reverse == NO_REVERSE) {
-              net->cardinalities[unit->uid * LIMIT_CARDINALITY + oldCard] = oldSuccPtr;
-            }
-            else {
-              net->heap[reverse].ports[CARDINALITY_LINK] = oldSuccPtr;
-            }
-            const u32 oldEnd = val(net->heap[val(oldSuccPtr)].ports[SPACE_LINK]);
-            net->heap[oldEnd].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, NO_REVERSE);
-          }
-          node.ports[CARDINALITY_LINK] = net->cardinalities[unit->uid * LIMIT_CARDINALITY + newCard];
-          tail.ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, NO_REVERSE);
-          net->cardinalities[unit->uid * LIMIT_CARDINALITY + newCard] = mkptr(SENTINEL_TAG, iNode);
-        }
+        remove_region(unit, net, iNode+1, end);
+        add_region(unit, net, iNode, end);
         break;
       }
       case 3: {
         u32 begin, end;
-        u8 leftOldCard, rightOldCard;
-        u32 leftReverse, rightReverse;
         if(tag(prev.ports[SPACE_LINK]) == REVERSE_TAG) {
           begin = iNode-1;
-          leftOldCard = 0;
-          leftReverse = val(prev.ports[SPACE_LINK]);
         } else {
           begin = val(prev.ports[SPACE_LINK]);
-          leftOldCard = get_cardinality(begin, iNode-1);
-          leftReverse = val(prev.ports[CARDINALITY_LINK]);
         }
         if(tag(next.ports[SPACE_LINK]) == REVERSE_TAG) {
           end = iNode+1;
-          rightOldCard = 0;
-          rightReverse = val(next.ports[SPACE_LINK]);
         } else {
           end = val(next.ports[SPACE_LINK]);
-          rightOldCard = get_cardinality(iNode+1, end);
-          rightReverse = val(net->heap[end].ports[CARDINALITY_LINK]);
         }
-        const u8 newCard = get_cardinality(begin, end);
-        Node& head = net->heap[begin];
-        Node& tail = net->heap[end];
+        remove_region(unit, net, begin, iNode-1);
+        remove_region(unit, net, iNode+1, end);
+        add_region(unit, net, begin, end);
         break;
       } }
     }
@@ -512,73 +448,28 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
   if((unit->tid & 3) == 0) {
     const u8 startCard = get_cardinality(size-1);
     u8 i;
-    if((1u << startCard) < size) {
-      propagate = FAIL;
-    }
-    else {
-      for(i=startCard; i<LIMIT_CARDINALITY; i++) {
-        const Ptr begin = net->cardinalities[unit->uid*LIMIT_CARDINALITY + i];
-        if(begin != FAIL) {
-          propagate = val(begin);
-          break;
-        }
+    for(i=startCard; i<LIMIT_CARDINALITY; i++) {
+      const Ptr begin = net->cardinalities[unit->uid*LIMIT_CARDINALITY + i];
+      if(begin != FAIL) {
+        propagate = val(begin);
+        break;
       }
     }
-    if(propagate != FAIL) {
+    while(propagate != FAIL) {
       const Node propNode = net->heap[propagate];
-      if(i == 0) {
-        const u32 successor = val(propNode.ports[CARDINALITY_LINK]);
-        net->cardinalities[unit->uid*LIMIT_CARDINALITY + i] = mkptr(SENTINEL_TAG, successor);
-        net->heap[successor].ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
+      const u32 regionEnd = (i == 0) ? propagate : val(propNode.ports[SPACE_LINK]);
+      const u32 regionSizeMinus1 = regionEnd - propagate;
+      if(i == LIMIT_CARDINALITY-1 && regionSizeMinus1+1 < size) {
+        propagate = FAIL;
+        break;
       } else {
-        const u32 regionEnd = val(propNode.ports[SPACE_LINK]);
-        const u32 regionSizeMinus1 = regionEnd - propagate;
-        const u8 newCard = get_cardinality(regionSizeMinus1);
-        if(regionSizeMinus1 >= size) {
-          const u32 newBegin = propagate + size;
-          const u8 newCard = get_cardinality(newBegin, regionEnd);
-          Node& nbNode = net->heap[newBegin];
-          if(newCard == i) {
-            net->cardinalities[unit->uid*LIMIT_CARDINALITY + i] = mkptr(SENTINEL_TAG, newBegin);
-            nbNode.ports[CARDINALITY_LINK] = propNode.ports[CARDINALITY_LINK];
-            nbNode.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, regionEnd);
-          } else {
-            const u32 successor = val(propNode.ports[CARDINALITY_LINK]);
-            net->cardinalities[unit->uid*LIMIT_CARDINALITY + i] = mkptr(SENTINEL_TAG, successor);
-            const u32 iReverse = val(net->heap[successor].ports[SPACE_LINK]);
-            net->heap[iReverse].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, NO_REVERSE);
-            Ptr& ncRef = net->cardinalities[unit->uid*LIMIT_CARDINALITY + newCard];
-            if(newCard == 0) {
-              if(ncRef == FAIL) {
-                nbNode.ports[CARDINALITY_LINK] = FAIL;
-              } else {
-                nbNode.ports[CARDINALITY_LINK] = ncRef;
-                net->heap[val(ncRef)].ports[SPACE_LINK] = newBegin;
-              }
-              ncRef = newBegin;
-              nbNode.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
-            } else {
-              if(ncRef == FAIL) {
-                nbNode.ports[CARDINALITY_LINK] = FAIL;
-              }
-              else {
-                nbNode.ports[CARDINALITY_LINK] = ncRef;
-                const u32 succEnd = val(net->heap[val(ncRef)].ports[SPACE_LINK]);
-                net->heap[succEnd].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, newBegin);
-              }
-              ncRef = newBegin;
-              nbNode.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, regionEnd);
-            }
-          }
-          net->heap[regionEnd].ports[SPACE_LINK] = newBegin;
-        } else {
-          assert(regionSizeMinus1+1 == size);
-          const u32 successor = val(propNode.ports[CARDINALITY_LINK]);
-          const u32 succEnd = val(net->heap[successor].ports[SPACE_LINK]);
-          net->heap[succEnd].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, NO_REVERSE);
-          net->cardinalities[unit->uid*LIMIT_CARDINALITY + i] = mkptr(SENTINEL_TAG, successor);
-        }
+        assert(regionSizeMinus1+1 >= size);
       }
+      remove_region(unit, net, propagate);
+      if(regionSizeMinus1 >= size) {
+        add_region(unit, net, propagate+size, regionEnd);
+      }
+      break;
     }
   }
   return __shfl_sync(unit->mask, propagate, unit->tid & (~3u));
