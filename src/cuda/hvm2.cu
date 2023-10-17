@@ -315,6 +315,49 @@ __host__ __device__ inline u8 get_cardinality(const u32 begin, const u32 end) {
   return get_cardinality(sizeMinus1);
 }
 
+__device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
+  Node& nodeBegin = net->heap[begin];
+  u8 cardinality;
+  u32 end;
+  u32 reverse;
+  const Ptr succPtr = nodeBegin.ports[CARDINALITY_LINK];
+  const Ptr nbsl = nodeBegin.ports[SPACE_LINK];
+  if(tag(nbsl) == REVERSE_TAG) {
+    end = begin;
+    cardinality = 0;
+    reverse = val(nbsl);
+    if(succPtr != FAIL) {
+      net->heap[val(succPtr)].ports[SPACE_LINK] = nbsl;
+    }
+  } else {
+    end = val(nodeBegin.ports[SPACE_LINK]);
+    cardinality = get_cardinality(begin, end);
+    const Ptr revPtr = net->heap[end].ports[CARDINALITY_LINK];
+    reverse = val(revPtr);
+    if(succPtr != FAIL) {
+      const u32 succEnd = val(net->heap[val(succPtr)].ports[SPACE_LINK]);
+      net->heap[succEnd].ports[CARDINALITY_LINK] = revPtr;
+    }
+  }
+  if(reverse == NO_REVERSE) {
+    net->cardinalities[LIMIT_CARDINALITY * unit->uid + cardinality] = succPtr;
+  } else {
+    net->heap[reverse].ports[CARDINALITY_LINK] = succPtr;
+  }
+}
+
+__device__ inline void remove_region_ptr(Unit* unit, Net* net, const Ptr beginPtr) {
+  remove_region(unit, net, cardinality, val(beginPtr));
+}
+
+__device__ inline void add_region(Unit* unit, Net* net, const u32 begin, const u32 end) {
+  // TODO(srogatch): implement
+}
+
+__device__ inline void add_region_ptrs(Unit* unit, Net* net, const Ptr beginPtr, const Ptr endPtr) {
+  return add_region(unit, net, val(beginPtr), val(endPtr));
+}
+
 __device__ inline void check_release(Unit* unit, Net* net, const Ptr pNode) {
   u32 iNode = val(pNode);
   Node &node = net->heap[iNode];
