@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <cassert>
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -331,6 +332,8 @@ __device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
     }
   } else {
     end = val(nodeBegin.ports[SPACE_LINK]);
+    assert(end-begin < AREA_SIZE);
+    assert(net->heap[end].ports[SPACE_LINK] == mkptr(SENTINEL_TAG, begin));
     cardinality = get_cardinality(begin, end);
     const Ptr revPtr = net->heap[end].ports[CARDINALITY_LINK];
     reverse = val(revPtr);
@@ -347,7 +350,7 @@ __device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
 }
 
 __device__ inline void remove_region_ptr(Unit* unit, Net* net, const Ptr beginPtr) {
-  remove_region(unit, net, cardinality, val(beginPtr));
+  remove_region(unit, net, val(beginPtr));
 }
 
 __device__ inline void add_region(Unit* unit, Net* net, const u32 begin, const u32 end) {
@@ -391,12 +394,11 @@ __device__ inline void check_release(Unit* unit, Net* net, const Ptr pNode) {
       assert(0 < iNode && iNode < 0xFFFFFFF);
       Node &prev = net->heap[iNode-1];
       Node &next = net->heap[iNode+1];
-      const u8 theCase = ((tag(prev.ports[CARDINALITY_LINK]) == SENTINEL_TAG) ? 1 : 0) | ((tag(next.ports[CARDINALITY_LINK]) == SENTINEL_TAG) ? 2 : 0);
+      const u8 theCase = ((tag(prev.ports[CARDINALITY_LINK]) == SENTINEL_TAG && (iNode % AREA_SIZE != 0)) ? 1 : 0)
+        | ((tag(next.ports[CARDINALITY_LINK]) == SENTINEL_TAG && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
       switch(theCase) {
       case 0: {
-        node.ports[CARDINALITY_LINK] = net->cardinalities[unit->uid * LIMIT_CARDINALITY + 0];
-        node.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
-        net->cardinalities[unit->uid * LIMIT_CARDINALITY + 0] = mkptr(SENTINEL_TAG, iNode);
+        add_region(unit, net, iNode, iNode);
         break;
       }
       case 1: {
@@ -406,7 +408,7 @@ __device__ inline void check_release(Unit* unit, Net* net, const Ptr pNode) {
         } else {
           begin = val(prev.ports[SPACE_LINK]);
         }
-        remove_region(unit, net, begin, iNode-1);
+        remove_region(unit, net, begin);
         add_region(unit, net, begin, iNode);
         break;
       }
@@ -417,7 +419,7 @@ __device__ inline void check_release(Unit* unit, Net* net, const Ptr pNode) {
         } else {
           end = val(next.ports[SPACE_LINK]);
         }
-        remove_region(unit, net, iNode+1, end);
+        remove_region(unit, net, iNode+1);
         add_region(unit, net, iNode, end);
         break;
       }
@@ -433,8 +435,8 @@ __device__ inline void check_release(Unit* unit, Net* net, const Ptr pNode) {
         } else {
           end = val(next.ports[SPACE_LINK]);
         }
-        remove_region(unit, net, begin, iNode-1);
-        remove_region(unit, net, iNode+1, end);
+        remove_region(unit, net, begin);
+        remove_region(unit, net, iNode+1);
         add_region(unit, net, begin, end);
         break;
       } }
@@ -463,7 +465,9 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
         propagate = FAIL;
         break;
       } else {
-        assert(regionSizeMinus1+1 >= size);
+        if(regionSizeMinus1+1 < size) {
+          printf(" c%u:%u<%u ", u32(i), regionSizeMinus1+1, size);
+        }
       }
       remove_region(unit, net, propagate);
       if(regionSizeMinus1 >= size) {
@@ -472,7 +476,13 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
       break;
     }
   }
-  return __shfl_sync(unit->mask, propagate, unit->tid & (~3u));
+  const u32 ans = __shfl_sync(unit->mask, propagate, unit->tid & (~3u));
+  if(ans != FAIL) {
+    for(u32 i=unit->qid; i<size; i+=SQUAD_SIZE) {
+      *reinterpret_cast<uint64_t*>(net->heap[ans+i].ports) = 0;
+    }
+  }
+  return ans;
 }
 
 // Gets the value of a ref; waits if taken.
@@ -648,6 +658,7 @@ __device__ bool deref(Unit* unit, Net* net, Book* book, Ptr* ref, Ptr up) {
     // Link root.
     if (unit->qid == A1 && is_var(*ref)) {
       *target(net, *ref) = up;
+      check_release(unit, net, *ref);
     }
   }
 
@@ -819,6 +830,7 @@ __device__ void atomic_subst(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr a_
     Ptr got = atomicCAS(target(net, a_ptr), a_dir, b_ptr);
     if (got == a_dir) {
       atomicExch(a_ref, NONE);
+      check_release(unit, net, a_dir);
     } else if (is_var(b_ptr)) {
       atomicExch(a_ref, redir(b_ptr));
       atomic_join(unit, net, book, a_ptr, a_ref, redir(b_ptr));
@@ -831,8 +843,10 @@ __device__ void atomic_subst(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr a_
       put_redex(unit, b_ptr, a_ptr); // FIXME: swapping bloats rbag; why?
     }
     atomicExch(a_ref, NONE);
+    check_release(unit, net, a_dir);
   } else {
     atomicExch(a_ref, NONE);
+    check_release(unit, net, a_dir);
   }
 }
 
@@ -1118,6 +1132,7 @@ __host__ Net* mknet(u32 root_fn, u32* jump_data, u32 jump_data_size) {
     net->heap[begin].ports[SPACE_LINK] = mkptr(SENTINEL_TAG, end);
     net->heap[begin].ports[CARDINALITY_LINK] = FAIL;
     net->heap[end].ports[SPACE_LINK] = mkptr(SENTINEL_TAG, begin);
+    net->heap[end].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, NO_REVERSE);
     // Fill cardinalities
     const u8 cardinality = get_cardinality(begin, end);
     net->cardinalities[i*LIMIT_CARDINALITY + cardinality] = mkptr(SENTINEL_TAG, begin);
