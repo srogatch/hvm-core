@@ -307,9 +307,9 @@ get_cardinality(const u32 sizeMinus1) {
   const u8 bits = sizeMinus1 + (take ? 0 : 1);
   const u8 nLeadingZeroes = 
 #if defined(__CUDA_ARCH__)
-    __clz(sizeMinus1)
+    __clz(bits)
 #else
-    __builtin_clz(sizeMinus1)
+    __builtin_clz(bits)
 #endif // defined(__CUDA_ARCH__)
     ;
   const u8 ans = min((take ? 32 : 31)-nLeadingZeroes, LIMIT_CARDINALITY-1);
@@ -346,6 +346,7 @@ __device__ u32 release_area_by_node(Net* net, const u32 iNode) {
 }
 
 __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin) {
+  assert(iArea * AREA_SIZE <= begin && begin < (iArea+1)*AREA_SIZE);
   Node& nodeBegin = net->heap[begin];
   u8 cardinality;
   u32 end;
@@ -363,9 +364,14 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
     }
   } else {
     end = val(nodeBegin.ports[SPACE_LINK]);
-    assert(end-begin < AREA_SIZE);
+    if(end-begin >= AREA_SIZE) {
+      printf(" ^%u:%u:%d ", begin, end, end-begin);
+    }
     if(net->heap[end].ports[SPACE_LINK] != mkptr(SENTINEL_TAG, begin)) {
       printf(" !%u,%u,%u ", begin, end, val(net->heap[end].ports[SPACE_LINK]));
+    }
+    if(end <= begin) {
+      assert(false);
     }
     cardinality = get_cardinality<false>(begin, end);
     const Ptr revPtr = net->heap[end].ports[CARDINALITY_LINK];
@@ -373,6 +379,7 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
     reverse = val(revPtr);
     if(succPtr != NO_LINK) {
       const u32 succEnd = val(net->heap[val(succPtr)].ports[SPACE_LINK]);
+      assert(succEnd > val(succPtr));
       net->heap[succEnd].ports[CARDINALITY_LINK] = revPtr;
     }
   }
@@ -384,11 +391,20 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
 }
 
 __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, const u32 end) {
+  assert(end >= begin);
+  assert(iArea * AREA_SIZE <= begin && end < (iArea+1)*AREA_SIZE);
   const u8 cardinality = get_cardinality<false>(begin, end);
   Node& nodeBegin = net->heap[begin];
   Node& nodeEnd = net->heap[end];
   Ptr& head = net->cardinalities[CARD_SLOTS * iArea + cardinality];
   nodeBegin.ports[CARDINALITY_LINK] = head;
+  assert((1u<<cardinality) <= end-begin+1);
+  if(cardinality < LIMIT_CARDINALITY-1 && !(end-begin+1 < (1u<<(cardinality+1)))) {
+    printf(" &%u,%u,%u ", begin, end, u32(cardinality));
+  }
+  if(!((cardinality == 0) == (begin == end))) {
+    printf(" *%u,%u,%u ", begin, end, u32(cardinality));
+  }
   if(cardinality == 0) {
     nodeBegin.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
     if(head != NO_LINK) {
@@ -489,6 +505,7 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
     while(propagate != FAIL) {
       const Node propNode = net->heap[propagate];
       const u32 regionEnd = (i == 0) ? propagate : val(propNode.ports[SPACE_LINK]);
+      assert(propagate <= regionEnd);
       const u32 regionSizeMinus1 = regionEnd - propagate;
       if(i != 0) {
         assert(net->heap[regionEnd].ports[SPACE_LINK] == mkptr(SENTINEL_TAG, propagate));
@@ -496,10 +513,9 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
       if(i == LIMIT_CARDINALITY-1 && regionSizeMinus1+1 < size) {
         propagate = FAIL;
         break;
-      } else {
-        if(regionSizeMinus1+1 < size) {
-          printf(" c%u:%u<%u ", u32(i), regionSizeMinus1+1, size);
-        }
+      }
+      if(regionSizeMinus1+1 < size) {
+        printf(" c%u:%u<%u ", u32(i), regionSizeMinus1+1, size);
       }
       remove_region(unit->uid, net, propagate);
       if(regionSizeMinus1 >= size) {
