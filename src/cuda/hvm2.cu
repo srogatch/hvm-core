@@ -322,21 +322,23 @@ __device__ void acquire_area_by_index(Net* net, const u32 iArea) {
   while(atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, LOCK) == LOCK);
 }
 
-__device__ void acquire_area_by_node(Net* net, const u32 iNode) {
+__device__ u32 acquire_area_by_node(Net* net, const u32 iNode) {
   const u32 iArea = iNode / AREA_SIZE;
   acquire_area_by_index(net, iArea);
+  return iArea;
 }
 
 __device__ void release_area_by_index(Net* net, const u32 iArea) {
   atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, NONE);
 }
 
-__device__ void release_area_by_node(Net* net, const u32 iNode) {
+__device__ u32 release_area_by_node(Net* net, const u32 iNode) {
   const u32 iArea = iNode / AREA_SIZE;
   release_area_by_index(net, iArea);
+  return iArea;
 }
 
-__device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
+__device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin) {
   Node& nodeBegin = net->heap[begin];
   u8 cardinality;
   u32 end;
@@ -368,19 +370,15 @@ __device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
   if(haveReverse) {
     net->heap[reverse].ports[CARDINALITY_LINK] = succPtr;
   } else {
-    net->cardinalities[CARD_SLOTS * unit->uid + cardinality] = succPtr;
+    net->cardinalities[CARD_SLOTS * iArea + cardinality] = succPtr;
   }
 }
 
-__device__ inline void remove_region_ptr(Unit* unit, Net* net, const Ptr beginPtr) {
-  remove_region(unit, net, val(beginPtr));
-}
-
-__device__ inline void add_region(Unit* unit, Net* net, const u32 begin, const u32 end) {
+__device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, const u32 end) {
   const u8 cardinality = get_cardinality(begin, end);
   Node& nodeBegin = net->heap[begin];
   Node& nodeEnd = net->heap[end];
-  Ptr& head = net->cardinalities[CARD_SLOTS * unit->uid + cardinality];
+  Ptr& head = net->cardinalities[CARD_SLOTS * iArea + cardinality];
   nodeBegin.ports[CARDINALITY_LINK] = head;
   if(cardinality == 0) {
     nodeBegin.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
@@ -402,15 +400,14 @@ __device__ inline void add_region(Unit* unit, Net* net, const u32 begin, const u
   head = mkptr(SENTINEL_TAG, begin);
 }
 
-__device__ inline void add_region_ptrs(Unit* unit, Net* net, const Ptr beginPtr, const Ptr endPtr) {
-  return add_region(unit, net, val(beginPtr), val(endPtr));
-}
-
 __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
   const u32 iNode = (reinterpret_cast<uint8_t*>(ref) - reinterpret_cast<uint8_t*>(net->heap)) / sizeof(Node);
-  assert(0 < iNode && iNode < 0xFFFFFFF);
+  if(!(0 < iNode && iNode < 0xFFFFFFF)) {
+    printf(" %x ", iNode);
+    return;
+  }
   Node &node = net->heap[iNode];
-  acquire_area_by_node(net, iNode);
+  const u32 iArea = acquire_area_by_node(net, iNode);
   if(node.ports[P1] == NONE && node.ports[P2] == NONE) {
     Node &prev = net->heap[iNode-1];
     Node &next = net->heap[iNode+1];
@@ -420,7 +417,7 @@ __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
       | ((tag(nextCl) == SENTINEL_TAG && nextCl <= NO_LINK && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
     switch(theCase) {
     case 0: {
-      add_region(unit, net, iNode, iNode);
+      add_region(iArea, net, iNode, iNode);
       break;
     }
     case 1: {
@@ -430,8 +427,8 @@ __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
       } else {
         begin = val(prev.ports[SPACE_LINK]);
       }
-      remove_region(unit, net, begin);
-      add_region(unit, net, begin, iNode);
+      remove_region(iArea, net, begin);
+      add_region(iArea, net, begin, iNode);
       break;
     }
     case 2: {
@@ -441,8 +438,8 @@ __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
       } else {
         end = val(next.ports[SPACE_LINK]);
       }
-      remove_region(unit, net, iNode+1);
-      add_region(unit, net, iNode, end);
+      remove_region(iArea, net, iNode+1);
+      add_region(iArea, net, iNode, end);
       break;
     }
     case 3: {
@@ -457,13 +454,13 @@ __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
       } else {
         end = val(next.ports[SPACE_LINK]);
       }
-      remove_region(unit, net, begin);
-      remove_region(unit, net, iNode+1);
-      add_region(unit, net, begin, end);
+      remove_region(iArea, net, begin);
+      remove_region(iArea, net, iNode+1);
+      add_region(iArea, net, begin, end);
       break;
     } }
   }
-  release_area_by_node(net, iNode);
+  release_area_by_index(net, iArea);
 }
 
 // Allocates one node in memory
@@ -492,9 +489,9 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
           printf(" c%u:%u<%u ", u32(i), regionSizeMinus1+1, size);
         }
       }
-      remove_region(unit, net, propagate);
+      remove_region(unit->uid, net, propagate);
       if(regionSizeMinus1 >= size) {
-        add_region(unit, net, propagate+size, regionEnd);
+        add_region(unit->uid, net, propagate+size, regionEnd);
       }
       break;
     }
