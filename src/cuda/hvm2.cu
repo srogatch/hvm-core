@@ -304,7 +304,7 @@ __device__ inline Ptr* at(Net* net, Val idx, Port port) {
 
 template<bool take> __host__ __device__ inline u8
 get_cardinality(const u32 sizeMinus1) {
-  const u8 bits = sizeMinus1 + (take ? 0 : 1);
+  const u32 bits = sizeMinus1 + (take ? 0 : 1);
   const u8 nLeadingZeroes = 
 #if defined(__CUDA_ARCH__)
     __clz(bits)
