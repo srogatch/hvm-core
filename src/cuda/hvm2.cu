@@ -77,7 +77,7 @@ constexpr const u8 CARDINALITY_LINK = 0;
 constexpr const u8 SPACE_LINK = 1;
 constexpr const u8 SENTINEL_TAG = 0xF;
 constexpr const u8 REVERSE_TAG = 0xE;
-constexpr const u32 NO_REVERSE = 0xFFFFFFF;
+constexpr const u32 NO_REVERSE = 0xFFFFF;
 
 // Types
 // -----
@@ -106,6 +106,7 @@ const Tag CT5 = 0xF; // main port of con node 5
 // Special values
 const u32 ROOT = 0x0 | VR2;  // pointer to root port
 const u32 NONE = 0x00000000; // empty value, not allocated
+const u32 NO_LINK = 0xFFFFFFFD; // no allocation linkage info in this node (it's the beginning or the end of a list)
 const u32 GONE = 0xFFFFFFFE; // node has been moved to redex bag by paired thread
 const u32 LOCK = 0xFFFFFFFF; // value taken by another thread, will be replaced soon
 const u32 FAIL = 0xFFFFFFFF; // signals failure to allocate
@@ -327,7 +328,7 @@ __device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
     end = begin;
     cardinality = 0;
     reverse = val(nbsl);
-    if(succPtr != FAIL) {
+    if(succPtr != NO_LINK) {
       net->heap[val(succPtr)].ports[SPACE_LINK] = nbsl;
     }
   } else {
@@ -337,12 +338,12 @@ __device__ inline void remove_region(Unit* unit, Net* net, const u32 begin) {
     cardinality = get_cardinality(begin, end);
     const Ptr revPtr = net->heap[end].ports[CARDINALITY_LINK];
     reverse = val(revPtr);
-    if(succPtr != FAIL) {
+    if(succPtr != NO_LINK) {
       const u32 succEnd = val(net->heap[val(succPtr)].ports[SPACE_LINK]);
       net->heap[succEnd].ports[CARDINALITY_LINK] = revPtr;
     }
   }
-  if(reverse == NO_REVERSE) {
+  if(mkptr(SENTINEL_TAG, reverse) == NO_LINK) {
     net->cardinalities[LIMIT_CARDINALITY * unit->uid + cardinality] = succPtr;
   } else {
     net->heap[reverse].ports[CARDINALITY_LINK] = succPtr;
@@ -361,16 +362,16 @@ __device__ inline void add_region(Unit* unit, Net* net, const u32 begin, const u
   nodeBegin.ports[CARDINALITY_LINK] = head;
   if(cardinality == 0) {
     nodeBegin.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
-    if(head != FAIL) {
+    if(head != NO_LINK) {
       Node& nodeSucc = net->heap[val(head)];
       nodeSucc.ports[SPACE_LINK] = mkptr(REVERSE_TAG, begin);
     }
   }
   else {
     nodeBegin.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, end);
-    nodeEnd.ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, NO_REVERSE);
+    nodeEnd.ports[CARDINALITY_LINK] = NO_LINK;
     nodeEnd.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, begin);
-    if(head != FAIL) {
+    if(head != NO_LINK) {
       const u32 succBegin = val(head);
       const u32 succEnd = val(net->heap[succBegin].ports[SPACE_LINK]);
       net->heap[succEnd].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, begin);
@@ -394,8 +395,10 @@ __device__ inline void check_release(Unit* unit, Net* net, const Ptr pNode) {
       assert(0 < iNode && iNode < 0xFFFFFFF);
       Node &prev = net->heap[iNode-1];
       Node &next = net->heap[iNode+1];
-      const u8 theCase = ((tag(prev.ports[CARDINALITY_LINK]) == SENTINEL_TAG && (iNode % AREA_SIZE != 0)) ? 1 : 0)
-        | ((tag(next.ports[CARDINALITY_LINK]) == SENTINEL_TAG && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
+      Ptr prevCl = prev.ports[CARDINALITY_LINK];
+      Ptr nextCl = next.ports[CARDINALITY_LINK];
+      const u8 theCase = ((tag(prevCl) == SENTINEL_TAG && prevCl <= NO_LINK && (iNode % AREA_SIZE != 0)) ? 1 : 0)
+        | ((tag(nextCl) == SENTINEL_TAG && nextCl <= NO_LINK && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
       switch(theCase) {
       case 0: {
         add_region(unit, net, iNode, iNode);
@@ -452,7 +455,7 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
     u8 i;
     for(i=startCard; i<LIMIT_CARDINALITY; i++) {
       const Ptr begin = net->cardinalities[unit->uid*LIMIT_CARDINALITY + i];
-      if(begin != FAIL) {
+      if(begin != NO_LINK) {
         propagate = val(begin);
         break;
       }
@@ -1119,7 +1122,9 @@ __host__ Net* mknet(u32 root_fn, u32* jump_data, u32 jump_data_size) {
   memset(net->heap, 0, HEAP_SIZE * sizeof(Node));
   memset(net->head, 0, HEAD_SIZE * sizeof(Wire));
   memset(net->jump, 0, JUMP_SIZE * sizeof(u32));
-  memset(net->cardinalities, -1, HEAP_CARDINALITIES * sizeof(Ptr));
+  for(u32 i=0; i<HEAP_CARDINALITIES; i++) {
+    net->cardinalities[i] = NO_LINK;
+  }
   *target(net, ROOT) = mkptr(REF, root_fn);
   for (u32 i = 0; i < jump_data_size / 2; ++i) {
     net->jump[jump_data[i*2+0]] = jump_data[i*2+1];
@@ -1128,11 +1133,12 @@ __host__ Net* mknet(u32 root_fn, u32* jump_data, u32 jump_data_size) {
     // Avoid allocating anything at address 0
     const u32 begin = i*AREA_SIZE + ((i == 0) ? 1 : 0);
     // Avoid allocating anything at address FFFFFFF
-    const u32 end = begin + AREA_SIZE - 1 - ((i == SQUAD_TOTAL-1) ? 1 : 0);
+    // 0xFFFFFFFD to 0xFFFFFFFF are reserved
+    const u32 end = begin + AREA_SIZE - 1 - ((i == SQUAD_TOTAL-1) ? 3 : 0);
     net->heap[begin].ports[SPACE_LINK] = mkptr(SENTINEL_TAG, end);
-    net->heap[begin].ports[CARDINALITY_LINK] = FAIL;
+    net->heap[begin].ports[CARDINALITY_LINK] = NO_LINK;
     net->heap[end].ports[SPACE_LINK] = mkptr(SENTINEL_TAG, begin);
-    net->heap[end].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, NO_REVERSE);
+    net->heap[end].ports[CARDINALITY_LINK] = NO_LINK;
     // Fill cardinalities
     const u8 cardinality = get_cardinality(begin, end);
     net->cardinalities[i*LIMIT_CARDINALITY + cardinality] = mkptr(SENTINEL_TAG, begin);
