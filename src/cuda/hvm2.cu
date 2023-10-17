@@ -363,9 +363,9 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
       net->heap[val(succPtr)].ports[SPACE_LINK] = nbsl;
     }
   } else {
-    end = val(nodeBegin.ports[SPACE_LINK]);
-    assert(begin < end);
-    assert(end-begin < AREA_SIZE);
+    end = val(nbsl);
+    //assert(begin < end);
+    //assert(end-begin < AREA_SIZE);
     //assert(net->heap[end].ports[SPACE_LINK] == mkptr(SENTINEL_TAG, begin));
     // if(end-begin >= AREA_SIZE) {
     //   printf(" ^%u:%u:%d ", begin, end, end-begin);
@@ -373,9 +373,10 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
     if(net->heap[end].ports[SPACE_LINK] != mkptr(SENTINEL_TAG, begin)) {
       printf(" !%u,%u,%u ", begin, end, val(net->heap[end].ports[SPACE_LINK]));
     }
-    // if(end <= begin) {
-    //   assert(false);
-    // }
+    if(end <= begin) {
+      printf(" @%u,%u ", begin, end);
+      assert(false);
+    }
     cardinality = get_cardinality<false>(begin, end);
     const Ptr revPtr = net->heap[end].ports[CARDINALITY_LINK];
     haveReverse = (revPtr != NO_LINK);
@@ -537,6 +538,7 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
       *reinterpret_cast<uint64_t*>(net->heap[ans+i].ports) = 0;
     }
   }
+  __syncwarp(unit->mask);
   if((unit->tid & 3) == 0) {
     release_area_by_index(net, unit->uid);
   }
