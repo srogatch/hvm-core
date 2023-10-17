@@ -309,10 +309,10 @@ get_cardinality(const u32 sizeMinus1) {
 #if defined(__CUDA_ARCH__)
     __clz(bits)
 #else
-    __builtin_clz(bits)
+    (bits == 0) ? 32 : __builtin_clz(bits)
 #endif // defined(__CUDA_ARCH__)
     ;
-  const u8 ans = min((take ? 32 : 31)-nLeadingZeroes, LIMIT_CARDINALITY-1);
+  const u8 ans = min(u32((take ? 32 : 31)-nLeadingZeroes), u32(LIMIT_CARDINALITY-1));
   // if(ans < LIMIT_CARDINALITY-1 && sizeMinus1 >= (1u<<ans)) {
   //   printf(" #%u,%u ", sizeMinus1, u32(ans));
   // }
@@ -364,15 +364,18 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
     }
   } else {
     end = val(nodeBegin.ports[SPACE_LINK]);
-    if(end-begin >= AREA_SIZE) {
-      printf(" ^%u:%u:%d ", begin, end, end-begin);
-    }
+    assert(begin < end);
+    assert(end-begin < AREA_SIZE);
+    //assert(net->heap[end].ports[SPACE_LINK] == mkptr(SENTINEL_TAG, begin));
+    // if(end-begin >= AREA_SIZE) {
+    //   printf(" ^%u:%u:%d ", begin, end, end-begin);
+    // }
     if(net->heap[end].ports[SPACE_LINK] != mkptr(SENTINEL_TAG, begin)) {
       printf(" !%u,%u,%u ", begin, end, val(net->heap[end].ports[SPACE_LINK]));
     }
-    if(end <= begin) {
-      assert(false);
-    }
+    // if(end <= begin) {
+    //   assert(false);
+    // }
     cardinality = get_cardinality<false>(begin, end);
     const Ptr revPtr = net->heap[end].ports[CARDINALITY_LINK];
     haveReverse = (revPtr != NO_LINK);
@@ -399,12 +402,14 @@ __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, co
   Ptr& head = net->cardinalities[CARD_SLOTS * iArea + cardinality];
   nodeBegin.ports[CARDINALITY_LINK] = head;
   assert((1u<<cardinality) <= end-begin+1);
-  if(cardinality < LIMIT_CARDINALITY-1 && !(end-begin+1 < (1u<<(cardinality+1)))) {
-    printf(" &%u,%u,%u ", begin, end, u32(cardinality));
-  }
-  if(!((cardinality == 0) == (begin == end))) {
-    printf(" *%u,%u,%u ", begin, end, u32(cardinality));
-  }
+  assert(cardinality == LIMIT_CARDINALITY-1 || (end-begin+1 < (1u<<(cardinality+1))));
+  assert((cardinality == 0) == (begin == end));
+  // if(cardinality < LIMIT_CARDINALITY-1 && !(end-begin+1 < (1u<<(cardinality+1)))) {
+  //   printf(" &%u,%u,%u ", begin, end, u32(cardinality));
+  // }
+  // if(!((cardinality == 0) == (begin == end))) {
+  //   printf(" *%u,%u,%u ", begin, end, u32(cardinality));
+  // }
   if(cardinality == 0) {
     nodeBegin.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
     if(head != NO_LINK) {
@@ -427,10 +432,11 @@ __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, co
 
 __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
   const u32 iNode = (reinterpret_cast<uint8_t*>(ref) - reinterpret_cast<uint8_t*>(net->heap)) / sizeof(Node);
-  if(!(0 < iNode && iNode < 0xFFFFFFF)) {
-    printf(" %x ", iNode);
-    return;
-  }
+  assert(0 < iNode && iNode < 0xFFFFFFF);
+  // if(!(0 < iNode && iNode < 0xFFFFFFF)) {
+  //   printf(" %x ", iNode);
+  //   return;
+  // }
   Node &node = net->heap[iNode];
   const u32 iArea = acquire_area_by_node(net, iNode);
   if(node.ports[P1] == NONE && node.ports[P2] == NONE) {
@@ -514,22 +520,25 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
         propagate = FAIL;
         break;
       }
-      if(regionSizeMinus1+1 < size) {
-        printf(" c%u:%u<%u ", u32(i), regionSizeMinus1+1, size);
-      }
+      assert(regionSizeMinus1+1 >= size);
+      // if(regionSizeMinus1+1 < size) {
+      //   printf(" c%u:%u<%u ", u32(i), regionSizeMinus1+1, size);
+      // }
       remove_region(unit->uid, net, propagate);
       if(regionSizeMinus1 >= size) {
         add_region(unit->uid, net, propagate+size, regionEnd);
       }
       break;
     }
-    release_area_by_index(net, unit->uid);
   }
   const u32 ans = __shfl_sync(unit->mask, propagate, unit->tid & (~3u));
   if(ans != FAIL) {
     for(u32 i=unit->qid; i<size; i+=SQUAD_SIZE) {
       *reinterpret_cast<uint64_t*>(net->heap[ans+i].ports) = 0;
     }
+  }
+  if((unit->tid & 3) == 0) {
+    release_area_by_index(net, unit->uid);
   }
   return ans;
 }
@@ -1184,14 +1193,17 @@ __host__ Net* mknet(u32 root_fn, u32* jump_data, u32 jump_data_size) {
     // Avoid allocating anything at address FFFFFFF
     // 0xFFFFFFFD to 0xFFFFFFFF are reserved
     const u32 end = begin + AREA_SIZE - 1 - ((i == SQUAD_TOTAL-1) ? 3 : 0);
+    // Fill cardinalities
+    const u8 cardinality = get_cardinality<false>(begin, end);
+    assert(i*CARD_SLOTS + LIMIT_CARDINALITY < HEAP_CARDINALITIES);
+    assert(cardinality < LIMIT_CARDINALITY);
+    net->cardinalities[i*CARD_SLOTS + cardinality] = mkptr(SENTINEL_TAG, begin);
+    net->cardinalities[i*CARD_SLOTS + LIMIT_CARDINALITY] = NONE; // mutex
+    // Fill heap linkage
     net->heap[begin].ports[SPACE_LINK] = mkptr(SENTINEL_TAG, end);
     net->heap[begin].ports[CARDINALITY_LINK] = NO_LINK;
     net->heap[end].ports[SPACE_LINK] = mkptr(SENTINEL_TAG, begin);
     net->heap[end].ports[CARDINALITY_LINK] = NO_LINK;
-    // Fill cardinalities
-    const u8 cardinality = get_cardinality<false>(begin, end);
-    net->cardinalities[i*CARD_SLOTS + cardinality] = mkptr(SENTINEL_TAG, begin);
-    net->cardinalities[i*CARD_SLOTS + LIMIT_CARDINALITY] = NONE; // mutex
   }
   return net;
 }
