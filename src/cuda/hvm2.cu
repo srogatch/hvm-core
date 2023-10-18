@@ -434,7 +434,9 @@ __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, co
   head = mkptr(SENTINEL_TAG, begin);
 }
 
-__device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
+#define check_release(u,n,r) check_release_dbg(u, n, r, __LINE__)
+
+__device__ inline void check_release_dbg(Unit* unit, Net* net, Ptr* ref, const int line) {
   const u32 iNode = (reinterpret_cast<uint8_t*>(ref) - reinterpret_cast<uint8_t*>(net->heap)) / sizeof(Node);
   assert(0 < iNode && iNode < 0xFFFFFFF);
   // if(!(0 < iNode && iNode < 0xFFFFFFF)) {
@@ -463,7 +465,7 @@ __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
         begin = val(prev.ports[SPACE_LINK]);
         assert(val(net->heap[begin].ports[SPACE_LINK]) == iNode-1);
         if(!(begin < iNode-1)) {
-          printf(" $%u,%u ", begin, iNode-1);
+          printf(" $%u,%u,L%d ", begin, iNode-1, line);
           assert(false);
         }
       }
@@ -733,7 +735,9 @@ __device__ bool deref(Unit* unit, Net* net, Book* book, Ptr* ref, Ptr up) {
     if (unit->qid == A1 && is_var(*ref)) {
       Ptr* t = target(net, *ref);
       *t = up;
-      check_release(unit, net, t);
+      if(up == NONE) {
+        check_release(unit, net, t);
+      }
     }
   }
 
