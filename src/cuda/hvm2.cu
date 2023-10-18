@@ -78,7 +78,7 @@ constexpr const u8 CARDINALITY_LINK = 0;
 constexpr const u8 SPACE_LINK = 1;
 constexpr const u8 SENTINEL_TAG = 0xF;
 constexpr const u8 REVERSE_TAG = 0xE;
-constexpr const u32 NO_REVERSE = 0xFFFFF;
+constexpr const u32 NO_REVERSE = 0xFFFFFFF;
 
 // Types
 // -----
@@ -107,8 +107,8 @@ const Tag CT5 = 0xF; // main port of con node 5
 // Special values
 const u32 ROOT =    0x0 | VR2;  // pointer to root port
 const u32 NONE =    0x00000000; // empty value, not allocated
-const u32 NO_LINK = 0xFFFFFFFD; // no allocation linkage info in this node (it's the beginning or the end of a list)
-const u32 GONE =    0xFFFFFFFE; // node has been moved to redex bag by paired thread
+const u32 NO_LINK = 0xFFFFFFDF; // no allocation linkage info in this node (it's the beginning or the end of a list)
+const u32 GONE =    0xFFFFFFEF; // node has been moved to redex bag by paired thread
 const u32 LOCK =    0xFFFFFFFF; // value taken by another thread, will be replaced soon
 const u32 FAIL =    0xFFFFFFFF; // signals failure to allocate
 
@@ -382,9 +382,12 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
     haveReverse = (revPtr != NO_LINK);
     reverse = val(revPtr);
     if(succPtr != NO_LINK) {
-      const u32 succEnd = val(net->heap[val(succPtr)].ports[SPACE_LINK]);
-      assert(succEnd > val(succPtr));
-      net->heap[succEnd].ports[CARDINALITY_LINK] = revPtr;
+      const u32 succEndPtr = net->heap[val(succPtr)].ports[SPACE_LINK];
+      assert(val(succPtr) < val(succEndPtr));
+      assert(tag(succPtr) == SENTINEL_TAG);
+      assert(tag(succEndPtr) == SENTINEL_TAG);
+      assert(val(net->heap[val(succEndPtr)].ports[SPACE_LINK]) == val(succPtr));
+      net->heap[val(succEndPtr)].ports[CARDINALITY_LINK] = revPtr;
     }
   }
   if(haveReverse) {
@@ -418,6 +421,7 @@ __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, co
     nodeBegin.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
     if(head != NO_LINK) {
       Node& nodeSucc = net->heap[val(head)];
+      assert(tag(nodeSucc.ports[SPACE_LINK]) == REVERSE_TAG);
       nodeSucc.ports[SPACE_LINK] = mkptr(REVERSE_TAG, begin);
     }
   }
@@ -426,9 +430,13 @@ __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, co
     nodeEnd.ports[CARDINALITY_LINK] = NO_LINK;
     nodeEnd.ports[SPACE_LINK] = mkptr(SENTINEL_TAG, begin);
     if(head != NO_LINK) {
-      const u32 succBegin = val(head);
-      const u32 succEnd = val(net->heap[succBegin].ports[SPACE_LINK]);
-      net->heap[succEnd].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, begin);
+      const u32 succBeginPtr = head;
+      const u32 succEndPtr = net->heap[val(succBeginPtr)].ports[SPACE_LINK];
+      assert(val(succBeginPtr) < val(succEndPtr));
+      assert(tag(succBeginPtr) == SENTINEL_TAG);
+      assert(tag(succEndPtr) == SENTINEL_TAG);
+      assert(val(net->heap[val(succEndPtr)].ports[SPACE_LINK]) == val(succBeginPtr));
+      net->heap[val(succEndPtr)].ports[CARDINALITY_LINK] = mkptr(SENTINEL_TAG, begin);
     }
   }
   head = mkptr(SENTINEL_TAG, begin);
@@ -450,8 +458,8 @@ __device__ inline void check_release_dbg(Unit* unit, Net* net, Ptr* ref, const i
     Node &next = net->heap[iNode+1];
     Ptr prevCl = prev.ports[CARDINALITY_LINK];
     Ptr nextCl = next.ports[CARDINALITY_LINK];
-    const u8 theCase = ((tag(prevCl) == SENTINEL_TAG && prevCl <= NO_LINK && (iNode % AREA_SIZE != 0)) ? 1 : 0)
-      | ((tag(nextCl) == SENTINEL_TAG && nextCl <= NO_LINK && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
+    const u8 theCase = ((tag(prevCl) == SENTINEL_TAG && val(prevCl) <= 0xFFFFFFD && (iNode % AREA_SIZE != 0)) ? 1 : 0)
+      | ((tag(nextCl) == SENTINEL_TAG && val(nextCl) <= 0xFFFFFFD && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
     switch(theCase) {
     case 0: {
       add_region(iArea, net, iNode, iNode);
@@ -465,7 +473,7 @@ __device__ inline void check_release_dbg(Unit* unit, Net* net, Ptr* ref, const i
         begin = val(prev.ports[SPACE_LINK]);
         assert(val(net->heap[begin].ports[SPACE_LINK]) == iNode-1);
         if(!(begin < iNode-1)) {
-          printf(" $%u,%u,L%d ", begin, iNode-1, line);
+          printf(" $%u,%u,%x,%x,L%d ", begin, iNode-1, prevCl, nextCl, line);
           assert(false);
         }
       }
