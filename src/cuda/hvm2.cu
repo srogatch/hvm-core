@@ -392,6 +392,9 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
   } else {
     net->cardinalities[CARD_SLOTS * iArea + cardinality] = succPtr;
   }
+  // DEBUG
+  // TODO(srogatch): this is slow - multiplies the asymptotic complexity by a linear factor
+  memset(net->heap+begin, 0, (end-begin+1)*sizeof(Node));
 }
 
 __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, const u32 end) {
@@ -458,6 +461,11 @@ __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
         begin = iNode-1;
       } else {
         begin = val(prev.ports[SPACE_LINK]);
+        assert(val(net->heap[begin].ports[SPACE_LINK]) == iNode-1);
+        if(!(begin < iNode-1)) {
+          printf(" $%u,%u ", begin, iNode-1);
+          assert(false);
+        }
       }
       remove_region(iArea, net, begin);
       add_region(iArea, net, begin, iNode);
@@ -469,6 +477,8 @@ __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
         end = iNode+1;
       } else {
         end = val(next.ports[SPACE_LINK]);
+        assert(end>iNode+1);
+        assert(val(net->heap[end].ports[SPACE_LINK]) == iNode+1);
       }
       remove_region(iArea, net, iNode+1);
       add_region(iArea, net, iNode, end);
@@ -480,11 +490,15 @@ __device__ inline void check_release(Unit* unit, Net* net, Ptr* ref) {
         begin = iNode-1;
       } else {
         begin = val(prev.ports[SPACE_LINK]);
+        assert(begin < iNode-1);
+        assert(val(net->heap[begin].ports[SPACE_LINK]) == iNode-1);
       }
       if(tag(next.ports[SPACE_LINK]) == REVERSE_TAG) {
         end = iNode+1;
       } else {
         end = val(next.ports[SPACE_LINK]);
+        assert(end>iNode+1);
+        assert(val(net->heap[end].ports[SPACE_LINK]) == iNode+1);
       }
       remove_region(iArea, net, begin);
       remove_region(iArea, net, iNode+1);
