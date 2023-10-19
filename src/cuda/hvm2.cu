@@ -329,6 +329,7 @@ __device__ void acquire_area_by_index(Net* net, const u32 iArea) {
   while(atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, LOCK) == LOCK);
   __threadfence();
   //printf(" Lock.%d,T%d ", iArea, threadIdx.x + blockIdx.x*blockDim.x);
+  printf(">");
 }
 
 __device__ u32 acquire_area_by_node(Net* net, const u32 iNode) {
@@ -339,6 +340,7 @@ __device__ u32 acquire_area_by_node(Net* net, const u32 iNode) {
 
 __device__ void release_area_by_index(Net* net, const u32 iArea) {
   //printf(" Unlock.%d,T%d ", iArea, threadIdx.x + blockIdx.x*blockDim.x);
+  printf("<");
   __threadfence();
   atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, NONE);
 }
@@ -401,7 +403,7 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
   }
   // DEBUG
   // TODO(srogatch): this is slow - multiplies the asymptotic complexity by a linear factor
-  memset(net->heap+begin, 0, (end-begin+1)*sizeof(Node));
+  //memset(net->heap+begin, 0, (end-begin+1)*sizeof(Node));
 }
 
 __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, const u32 end) {
@@ -461,6 +463,7 @@ __device__ inline void check_release_dbg(Unit* unit, Net* net, Ptr* ref, const i
   Node &node = net->heap[iNode];
   if(node.ports[P1] == NONE && node.ports[P2] == NONE) {
     //printf(" Release.%x,L%d,T%d,p%p ", iNode, line, unit->gid, ref);
+    printf("-");
     Node &prev = net->heap[iNode-1];
     Node &next = net->heap[iNode+1];
     Ptr prevCl = prev.ports[CARDINALITY_LINK];
@@ -576,6 +579,7 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
   __syncwarp(unit->mask);
   if((unit->tid & 3) == 0) {
     //printf(" Alloc.%x,%x ", propagate, propagate+size-1);
+    printf("+");
     release_area_by_index(net, unit->uid);
   }
   return ans;
