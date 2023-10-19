@@ -106,8 +106,8 @@ const Tag CT5 = 0xF; // main port of con node 5
 
 // Special values
 const u32 ROOT =    0x0 | VR2;  // pointer to root port
-const u32 NONE =    0x00000000; // empty value, not allocated
-const u32 NO_LINK = 0xFFFFFFDF; // no allocation linkage info in this node (it's the beginning or the end of a list)
+const u32 NO_LINK = 0xFFFFFFCF; // no allocation linkage info in this node (it's the beginning or the end of a list)
+const u32 NONE =    0xFFFFFFDF; // empty value, not allocated
 const u32 GONE =    0xFFFFFFEF; // node has been moved to redex bag by paired thread
 const u32 LOCK =    0xFFFFFFFF; // value taken by another thread, will be replaced soon
 const u32 FAIL =    0xFFFFFFFF; // signals failure to allocate
@@ -327,6 +327,8 @@ get_cardinality(const u32 begin, const u32 end) {
 
 __device__ void acquire_area_by_index(Net* net, const u32 iArea) {
   while(atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, LOCK) == LOCK);
+  __threadfence();
+  //printf(" Lock.%d,T%d ", iArea, threadIdx.x + blockIdx.x*blockDim.x);
 }
 
 __device__ u32 acquire_area_by_node(Net* net, const u32 iNode) {
@@ -336,6 +338,8 @@ __device__ u32 acquire_area_by_node(Net* net, const u32 iNode) {
 }
 
 __device__ void release_area_by_index(Net* net, const u32 iArea) {
+  //printf(" Unlock.%d,T%d ", iArea, threadIdx.x + blockIdx.x*blockDim.x);
+  __threadfence();
   atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, NONE);
 }
 
@@ -421,7 +425,9 @@ __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, co
     nodeBegin.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
     if(head != NO_LINK) {
       Node& nodeSucc = net->heap[val(head)];
-      assert(tag(nodeSucc.ports[SPACE_LINK]) == REVERSE_TAG);
+      if(!(tag(nodeSucc.ports[SPACE_LINK]) == REVERSE_TAG)) {
+        printf("\n ~%x,%x \n", val(head), nodeSucc.ports[SPACE_LINK]);
+      }
       nodeSucc.ports[SPACE_LINK] = mkptr(REVERSE_TAG, begin);
     }
   }
@@ -451,15 +457,16 @@ __device__ inline void check_release_dbg(Unit* unit, Net* net, Ptr* ref, const i
   //   printf(" %x ", iNode);
   //   return;
   // }
-  Node &node = net->heap[iNode];
   const u32 iArea = acquire_area_by_node(net, iNode);
+  Node &node = net->heap[iNode];
   if(node.ports[P1] == NONE && node.ports[P2] == NONE) {
+    //printf(" Release.%x,L%d,T%d,p%p ", iNode, line, unit->gid, ref);
     Node &prev = net->heap[iNode-1];
     Node &next = net->heap[iNode+1];
     Ptr prevCl = prev.ports[CARDINALITY_LINK];
     Ptr nextCl = next.ports[CARDINALITY_LINK];
-    const u8 theCase = ((tag(prevCl) == SENTINEL_TAG && val(prevCl) <= 0xFFFFFFD && (iNode % AREA_SIZE != 0)) ? 1 : 0)
-      | ((tag(nextCl) == SENTINEL_TAG && val(nextCl) <= 0xFFFFFFD && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
+    const u8 theCase = ((tag(prevCl) == SENTINEL_TAG && val(prevCl) <= 0xFFFFFFC && (iNode % AREA_SIZE != 0)) ? 1 : 0)
+      | ((tag(nextCl) == SENTINEL_TAG && val(nextCl) <= 0xFFFFFFC && ((iNode+1) % AREA_SIZE != 0)) ? 2 : 0);
     switch(theCase) {
     case 0: {
       add_region(iArea, net, iNode, iNode);
@@ -473,7 +480,7 @@ __device__ inline void check_release_dbg(Unit* unit, Net* net, Ptr* ref, const i
         begin = val(prev.ports[SPACE_LINK]);
         assert(val(net->heap[begin].ports[SPACE_LINK]) == iNode-1);
         if(!(begin < iNode-1)) {
-          printf(" $%u,%u,%x,%x,L%d ", begin, iNode-1, prevCl, nextCl, line);
+          printf(" $%x,%x,%x,%x,L%d ", begin, iNode-1, prevCl, nextCl, line);
           assert(false);
         }
       }
@@ -512,6 +519,7 @@ __device__ inline void check_release_dbg(Unit* unit, Net* net, Ptr* ref, const i
       }
       remove_region(iArea, net, begin);
       remove_region(iArea, net, iNode+1);
+      node.ports[0] = node.ports[1] = GONE;
       add_region(iArea, net, begin, end);
       break;
     } }
@@ -539,7 +547,10 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
       assert(propagate <= regionEnd);
       const u32 regionSizeMinus1 = regionEnd - propagate;
       if(i != 0) {
-        assert(net->heap[regionEnd].ports[SPACE_LINK] == mkptr(SENTINEL_TAG, propagate));
+        if(!(net->heap[regionEnd].ports[SPACE_LINK] == mkptr(SENTINEL_TAG, propagate))) {
+          printf(" /%x,%x,%x ", propagate, regionEnd, net->heap[regionEnd].ports[SPACE_LINK]);
+          assert(false);
+        }
       }
       if(i == LIMIT_CARDINALITY-1 && regionSizeMinus1+1 < size) {
         propagate = FAIL;
@@ -564,6 +575,7 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
   }
   __syncwarp(unit->mask);
   if((unit->tid & 3) == 0) {
+    //printf(" Alloc.%x,%x ", propagate, propagate+size-1);
     release_area_by_index(net, unit->uid);
   }
   return ans;
@@ -851,7 +863,8 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
     // If target is a redirection, clear and move forward.
     if (is_red(t_ptr)) {
       // We own the redirection, so we can mutate it.
-      *t_ref = 0;
+      *t_ref = NONE;
+      check_release(unit, net, t_ref);
       a_ptr = t_ptr;
       continue;
     }
@@ -866,7 +879,8 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
         t_ref = target(net, t_ptr);
         t_ptr = *t_ref;
         while (is_red(t_ptr)) {
-          *t_ref = 0;
+          *t_ref = NONE;
+          check_release(unit, net, t_ref);
           t_ref = target(net, t_ptr);
           t_ptr = *t_ref;
         }
@@ -917,24 +931,36 @@ __device__ void atomic_subst(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr a_
   Ptr* a_ref = target(net, a_dir);
   if (is_var(a_ptr)) {
     Ptr got = atomicCAS(target(net, a_ptr), a_dir, b_ptr);
-    if (got == a_dir) {
-      atomicExch(a_ref, NONE);
+    if (got == a_dir) {      
+      if(atomicCAS(a_ref, LOCK, NONE) != LOCK) {
+        printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+      }
       check_release(unit, net, a_ref);
     } else if (is_var(b_ptr)) {
-      atomicExch(a_ref, redir(b_ptr));
+      //atomicExch(a_ref, redir(b_ptr));
+      if(atomicCAS(a_ref, LOCK, redir(b_ptr)) != LOCK) {
+        printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+      }
       atomic_join(unit, net, book, a_ptr, a_ref, redir(b_ptr));
     } else if (is_pri(b_ptr)) {
-      atomicExch(a_ref, b_ptr);
+      // atomicExch(a_ref, b_ptr);
+      if(atomicCAS(a_ref, LOCK, b_ptr) != LOCK) {
+        printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+      }
       atomic_link(unit, net, book, a_ptr, a_ref, b_ptr);
     }
   } else if (is_pri(a_ptr) && is_pri(b_ptr)) {
     if (a_ptr < b_ptr || put) {
       put_redex(unit, b_ptr, a_ptr); // FIXME: swapping bloats rbag; why?
     }
-    atomicExch(a_ref, NONE);
+    if(atomicCAS(a_ref, LOCK, NONE) != LOCK) {
+      printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+    }
     check_release(unit, net, a_ref);
   } else {
-    atomicExch(a_ref, NONE);
+    if(atomicCAS(a_ref, LOCK, NONE) != LOCK) {
+      printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+    }
     check_release(unit, net, a_ref);
   }
 }
@@ -1206,8 +1232,11 @@ __host__ Net* mknet(u32 root_fn, u32* jump_data, u32 jump_data_size) {
   net->cardinalities = (Ptr*)malloc(HEAP_CARDINALITIES * sizeof(Ptr));
   memset(net->bags, 0, BAGS_SIZE * sizeof(Wire));
   memset(net->heap, 0, HEAP_SIZE * sizeof(Node));
-  memset(net->head, 0, HEAD_SIZE * sizeof(Wire));
+  //memset(net->head, 0, HEAD_SIZE * sizeof(Wire));
   memset(net->jump, 0, JUMP_SIZE * sizeof(u32));
+  for(u32 i=0; i<HEAP_SIZE; i++) {
+    net->heap[i].ports[0] = net->heap[i].ports[1] = NONE;
+  }
   for(u32 i=0; i<HEAP_CARDINALITIES; i++) {
     net->cardinalities[i] = NO_LINK;
   }
@@ -1219,8 +1248,8 @@ __host__ Net* mknet(u32 root_fn, u32* jump_data, u32 jump_data_size) {
     // Avoid allocating anything at address 0
     const u32 begin = i*AREA_SIZE + ((i == 0) ? 1 : 0);
     // Avoid allocating anything at address FFFFFFF
-    // 0xFFFFFFFD to 0xFFFFFFFF are reserved
-    const u32 end = begin + AREA_SIZE - 1 - ((i == SQUAD_TOTAL-1) ? 3 : 0);
+    // 0xFFFFFFC to 0xFFFFFFF are reserved
+    const u32 end = (i+1)*AREA_SIZE - 1 - ((i == SQUAD_TOTAL-1) ? 4 : 0);
     // Fill cardinalities
     const u8 cardinality = get_cardinality<false>(begin, end);
     assert(i*CARD_SLOTS + LIMIT_CARDINALITY < HEAP_CARDINALITIES);
