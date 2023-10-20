@@ -154,9 +154,9 @@ typedef struct {
   u32   port; // unit port (P1|P2)
   u64   rwts; // local rewrites performed
   u32   mask; // squad warp mask
-  u32*  aloc; // where to alloc next node
+  //u32*  aloc; // where to alloc next node
   u32*  sm32; // shared 32-bit buffer
-  u64*  sm64; // shared 64-bit buffer
+  //u64*  sm64; // shared 64-bit buffer
   u64*  RBAG; // init of my redex bag
   u32*  rlen; // local redex bag length
   Wire* rbag; // local redex bag
@@ -206,7 +206,7 @@ constexpr __host__ __device__ inline Val val(Ptr ptr) {
 
 // Is this pointer a variable?
 constexpr __host__ __device__ inline bool is_var(Ptr ptr) {
-  return ptr != 0 && tag(ptr) >= VR1 && tag(ptr) <= VR2;
+  return ptr != NONE && tag(ptr) >= VR1 && tag(ptr) <= VR2;
 }
 
 // Is this pointer a redirection?
@@ -342,7 +342,10 @@ __device__ void release_area_by_index(Net* net, const u32 iArea) {
   //printf(" Unlock.%d,T%d ", iArea, threadIdx.x + blockIdx.x*blockDim.x);
   //printf("<");
   __threadfence();
-  atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, NONE);
+  u32 former;
+  if((former=atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, NONE)) != LOCK) {
+    printf(" Mutex was %x ", former);
+  }
 }
 
 __device__ u32 release_area_by_node(Net* net, const u32 iNode) {
@@ -645,7 +648,7 @@ __device__ __noinline__ void split(u32 tid, u64* a_len, u64* a_arr, u64* b_len, 
 
 // Pops a redex
 __device__ Wire pop_redex(Unit* unit) {
-  Wire redex = mkwire(0, 0);
+  Wire redex = mkwire(NONE, NONE);
 
   u32 rlen = *unit->rlen;
   if (rlen > 0 && rlen <= RBAG_SIZE - MAX_NEW_REDEX) {
@@ -653,7 +656,7 @@ __device__ Wire pop_redex(Unit* unit) {
   }
   __syncwarp(unit->mask);
   if (rlen > 0 && rlen <= RBAG_SIZE - MAX_NEW_REDEX) {
-    unit->rbag[rlen-1] = mkwire(0, 0);
+    unit->rbag[rlen-1] = mkwire(NONE, NONE);
     *unit->rlen = rlen-1;
   }
   __syncwarp(unit->mask);
@@ -786,17 +789,17 @@ __device__ u32 sid_to_uid(u32 sid, bool flip) {
 
 __device__ Unit init_unit(Net* net, bool flip) {
   __shared__ u32 SMEM[GROUP_SIZE * SMEM_SIZE];
-  __shared__ u32 ALOC[GROUP_SIZE];
+  // __shared__ u32 ALOC[GROUP_SIZE];
 
   for (u32 i = 0; i < GROUP_SIZE * SMEM_SIZE / BLOCK_SIZE; ++i) {
-    SMEM[i * BLOCK_SIZE + threadIdx.x] = 0;
+    SMEM[i * BLOCK_SIZE + threadIdx.x] = NONE;
   }
   __syncthreads();
 
-  for (u32 i = 0; i < GROUP_SIZE / BLOCK_SIZE; ++i) {
-    ALOC[i * BLOCK_SIZE + threadIdx.x] = 0;
-  }
-  __syncthreads();
+  // for (u32 i = 0; i < GROUP_SIZE / BLOCK_SIZE; ++i) {
+  //   ALOC[i * BLOCK_SIZE + threadIdx.x] = 0;
+  // }
+  // __syncthreads();
 
   Unit unit;
   unit.tid  = threadIdx.x;
@@ -807,13 +810,13 @@ __device__ Unit init_unit(Net* net, bool flip) {
   unit.rwts = 0;
   unit.mask = ((1 << SQUAD_SIZE) - 1) << (unit.tid % 32 / SQUAD_SIZE * SQUAD_SIZE);
   unit.port = unit.tid % 2;
-  unit.aloc = (u32*)(ALOC + unit.tid / SQUAD_SIZE); // locally cached
+  //unit.aloc = (u32*)(ALOC + unit.tid / SQUAD_SIZE); // locally cached
   unit.sm32 = (u32*)(SMEM + unit.tid / SQUAD_SIZE * SMEM_SIZE);
-  unit.sm64 = (u64*)(SMEM + unit.tid / SQUAD_SIZE * SMEM_SIZE);
+  //unit.sm64 = (u64*)(SMEM + unit.tid / SQUAD_SIZE * SMEM_SIZE);
   unit.RBAG = net->bags + unit.uid * RBAG_SIZE;
   unit.rlen = (u32*)(unit.RBAG + 0); // TODO: cache locally
   unit.rbag = unit.RBAG + 1;
-  *unit.aloc = 0; // TODO: randomize or persist
+  //*unit.aloc = 0; // TODO: randomize or persist
 
   return unit;
 }
@@ -878,7 +881,8 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
       // We don't own the var, so we must try replacing with a CAS.
       if (atomicCAS(t_ref, t_ptr, b_ptr) == t_ptr) {
         // Clear source location.
-        *a_ref = 0;
+        *a_ref = NONE;
+        check_release(unit, net, a_ref);
         // Collect the orphaned backward path.
         t_ref = target(net, t_ptr);
         t_ptr = *t_ref;
@@ -912,7 +916,7 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
 
       // Second to arrive clears up the memory.
       } else {
-        *x_ref = 0;
+        *x_ref = NONE;
         replace(y_ref, GONE, NONE);
         check_release(unit, net, y_ref);
         return;
@@ -991,7 +995,7 @@ __device__ void interact(Unit* unit, Net* net, Book* book) {
   }
 
   // Defines type of interaction
-  bool rewrite = a_ptr != 0 && b_ptr != 0;
+  bool rewrite = a_ptr != NONE && b_ptr != NONE;
   bool var_pri = rewrite && is_var(a_ptr) && is_pri(b_ptr) && unit->port == P1;
   bool era_ctr = rewrite && is_era(a_ptr) && is_ctr(b_ptr);
   bool ctr_era = rewrite && is_ctr(a_ptr) && is_era(b_ptr);
@@ -1238,8 +1242,8 @@ __host__ Net* mknet(u32 root_fn, u32* jump_data, u32 jump_data_size) {
   net->jump = (u32*) malloc(JUMP_SIZE * sizeof(u32));
   net->cardinalities = (Ptr*)malloc(HEAP_CARDINALITIES * sizeof(Ptr));
   memset(net->bags, 0, BAGS_SIZE * sizeof(Wire));
-  memset(net->heap, 0, HEAP_SIZE * sizeof(Node));
-  //memset(net->head, 0, HEAD_SIZE * sizeof(Wire));
+  //memset(net->heap, 0, HEAP_SIZE * sizeof(Node));
+  memset(net->head, 0, HEAD_SIZE * sizeof(Wire));
   memset(net->jump, 0, JUMP_SIZE * sizeof(u32));
   for(u32 i=0; i<HEAP_SIZE; i++) {
     net->heap[i].ports[0] = net->heap[i].ports[1] = NONE;
