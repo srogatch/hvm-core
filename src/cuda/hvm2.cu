@@ -585,6 +585,7 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
     //printf("+");
     release_area_by_index(net, unit->uid);
   }
+  __syncwarp(unit->mask);
   return ans;
 }
 
@@ -623,7 +624,7 @@ __device__ __noinline__ void split(u32 tid, u64* a_len, u64* a_arr, u64* b_len, 
     u64 value;
     if (move && i < max) {
       value = B_arr[i];
-      B_arr[i] = 0;
+      B_arr[i] = mkwire(NONE, NONE);
     }
     __syncthreads();
     if (move && i < max) {
