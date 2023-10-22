@@ -341,11 +341,12 @@ __device__ u32 acquire_area_by_node(Net* net, const u32 iNode) {
 __device__ void release_area_by_index(Net* net, const u32 iArea) {
   //printf(" Unlock.%d,T%d ", iArea, threadIdx.x + blockIdx.x*blockDim.x);
   //printf("<");
+  net->cardinalities[iArea*CARD_SLOTS + LIMIT_CARDINALITY] = NONE;
   __threadfence();
-  u32 former;
-  if((former=atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, NONE)) != LOCK) {
-    printf(" Mutex was %x ", former);
-  }
+  // u32 former;
+  // if((former=atomicExch(net->cardinalities + iArea*CARD_SLOTS + LIMIT_CARDINALITY, NONE)) != LOCK) {
+  //   printf(" Mutex was %x ", former);
+  // }
 }
 
 __device__ u32 release_area_by_node(Net* net, const u32 iNode) {
@@ -379,13 +380,13 @@ __device__ inline void remove_region(const u32 iArea, Net* net, const u32 begin)
     // if(end-begin >= AREA_SIZE) {
     //   printf(" ^%u:%u:%d ", begin, end, end-begin);
     // }
-    if(net->heap[end].ports[SPACE_LINK] != mkptr(SENTINEL_TAG, begin)) {
-      printf(" !%u,%u,%u ", begin, end, val(net->heap[end].ports[SPACE_LINK]));
-    }
-    if(end <= begin) {
-      printf(" @%u,%u ", begin, end);
-      assert(false);
-    }
+    // if(net->heap[end].ports[SPACE_LINK] != mkptr(SENTINEL_TAG, begin)) {
+    //   printf(" !%u,%u,%u ", begin, end, val(net->heap[end].ports[SPACE_LINK]));
+    // }
+    // if(end <= begin) {
+    //   printf(" @%u,%u ", begin, end);
+    //   assert(false);
+    // }
     cardinality = get_cardinality<false>(begin, end);
     const Ptr revPtr = net->heap[end].ports[CARDINALITY_LINK];
     haveReverse = (revPtr != NO_LINK);
@@ -430,9 +431,9 @@ __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, co
     nodeBegin.ports[SPACE_LINK] = mkptr(REVERSE_TAG, NO_REVERSE);
     if(head != NO_LINK) {
       Node& nodeSucc = net->heap[val(head)];
-      if(!(tag(nodeSucc.ports[SPACE_LINK]) == REVERSE_TAG)) {
-        printf("\n ~%x,%x \n", val(head), nodeSucc.ports[SPACE_LINK]);
-      }
+      // if(!(tag(nodeSucc.ports[SPACE_LINK]) == REVERSE_TAG)) {
+      //   printf("\n ~%x,%x \n", val(head), nodeSucc.ports[SPACE_LINK]);
+      // }
       nodeSucc.ports[SPACE_LINK] = mkptr(REVERSE_TAG, begin);
     }
   }
@@ -485,10 +486,10 @@ __device__ inline void check_release_dbg(Unit* unit, Net* net, Ptr* ref, const i
       } else {
         begin = val(prev.ports[SPACE_LINK]);
         assert(val(net->heap[begin].ports[SPACE_LINK]) == iNode-1);
-        if(!(begin < iNode-1)) {
-          printf(" $%x,%x,%x,%x,L%d ", begin, iNode-1, prevCl, nextCl, line);
-          assert(false);
-        }
+        // if(!(begin < iNode-1)) {
+        //   printf(" $%x,%x,%x,%x,L%d ", begin, iNode-1, prevCl, nextCl, line);
+        //   assert(false);
+        // }
       }
       remove_region(iArea, net, begin);
       add_region(iArea, net, begin, iNode);
@@ -552,12 +553,12 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
       const u32 regionEnd = (i == 0) ? propagate : val(propNode.ports[SPACE_LINK]);
       assert(propagate <= regionEnd);
       const u32 regionSizeMinus1 = regionEnd - propagate;
-      if(i != 0) {
-        if(!(net->heap[regionEnd].ports[SPACE_LINK] == mkptr(SENTINEL_TAG, propagate))) {
-          printf(" /%x,%x,%x ", propagate, regionEnd, net->heap[regionEnd].ports[SPACE_LINK]);
-          assert(false);
-        }
-      }
+      // if(i != 0) {
+      //   if(!(net->heap[regionEnd].ports[SPACE_LINK] == mkptr(SENTINEL_TAG, propagate))) {
+      //     printf(" /%x,%x,%x ", propagate, regionEnd, net->heap[regionEnd].ports[SPACE_LINK]);
+      //     assert(false);
+      //   }
+      // }
       if(i == LIMIT_CARDINALITY-1 && regionSizeMinus1+1 < size) {
         propagate = FAIL;
         break;
@@ -847,7 +848,7 @@ __device__ void atomic_join(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
     Ptr  ste_ptr = *ste_ref;
     if (is_var(ste_ptr)) {
       Ptr* trg_ref = target(net, ste_ptr);
-      Ptr  trg_ptr = atomicAdd(trg_ref, 0);
+      Ptr  trg_ptr = *trg_ref; // atomicAdd(trg_ref, 0);
       if (is_red(trg_ptr)) {
         Ptr neo_ptr = undir(trg_ptr);
         Ptr updated = atomicCAS(ste_ref, ste_ptr, neo_ptr);
@@ -866,7 +867,7 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
   while (true) {
     // Peek the target, which may not be owned by us.
     Ptr* t_ref = target(net, a_ptr);
-    Ptr  t_ptr = atomicAdd(t_ref, 0);
+    Ptr  t_ptr = *t_ref; // atomicAdd(t_ref, 0);
 
     // If target is a redirection, clear and move forward.
     if (is_red(t_ptr)) {
@@ -940,36 +941,40 @@ __device__ void atomic_subst(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr a_
   Ptr* a_ref = target(net, a_dir);
   if (is_var(a_ptr)) {
     Ptr got = atomicCAS(target(net, a_ptr), a_dir, b_ptr);
-    if (got == a_dir) {      
-      if(atomicCAS(a_ref, LOCK, NONE) != LOCK) {
-        printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
-      }
+    if (got == a_dir) {
+      *a_ref = NONE;
+      // if(atomicCAS(a_ref, LOCK, NONE) != LOCK) {
+      //   printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+      // }
       check_release(unit, net, a_ref);
     } else if (is_var(b_ptr)) {
-      //atomicExch(a_ref, redir(b_ptr));
-      if(atomicCAS(a_ref, LOCK, redir(b_ptr)) != LOCK) {
-        printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
-      }
+      *a_ref = redir(b_ptr);
+      // if(atomicCAS(a_ref, LOCK, redir(b_ptr)) != LOCK) {
+      //   printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+      // }
       atomic_join(unit, net, book, a_ptr, a_ref, redir(b_ptr));
     } else if (is_pri(b_ptr)) {
+      *a_ref = b_ptr;
       // atomicExch(a_ref, b_ptr);
-      if(atomicCAS(a_ref, LOCK, b_ptr) != LOCK) {
-        printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
-      }
+      // if(atomicCAS(a_ref, LOCK, b_ptr) != LOCK) {
+      //   printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+      // }
       atomic_link(unit, net, book, a_ptr, a_ref, b_ptr);
     }
   } else if (is_pri(a_ptr) && is_pri(b_ptr)) {
     if (a_ptr < b_ptr || put) {
       put_redex(unit, b_ptr, a_ptr); // FIXME: swapping bloats rbag; why?
     }
-    if(atomicCAS(a_ref, LOCK, NONE) != LOCK) {
-      printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
-    }
+    *a_ref = NONE;
+    // if(atomicCAS(a_ref, LOCK, NONE) != LOCK) {
+    //   printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+    // }
     check_release(unit, net, a_ref);
   } else {
-    if(atomicCAS(a_ref, LOCK, NONE) != LOCK) {
-      printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
-    }
+    *a_ref = NONE;
+    // if(atomicCAS(a_ref, LOCK, NONE) != LOCK) {
+    //   printf(" ERR%d %08x %08x %08x \n", __LINE__, a_ptr, a_dir, b_ptr);
+    // }
     check_release(unit, net, a_ref);
   }
 }
