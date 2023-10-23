@@ -459,12 +459,16 @@ __device__ inline void add_region(const u32 iArea, Net* net, const u32 begin, co
 __device__ inline void check_release_dbg(Unit* unit, Net* net, Ptr* ref, const int line) {
   const u32 iNode = (reinterpret_cast<uint8_t*>(ref) - reinterpret_cast<uint8_t*>(net->heap)) / sizeof(Node);
   assert(0 < iNode && iNode < 0xFFFFFFF);
+
+  Node &node = net->heap[iNode];
+  if(!(node.ports[P1] == NONE && node.ports[P2] == NONE)) {
+    return;
+  }
   // if(!(0 < iNode && iNode < 0xFFFFFFF)) {
   //   printf(" %x ", iNode);
   //   return;
   // }
   const u32 iArea = acquire_area_by_node(net, iNode);
-  Node &node = net->heap[iNode];
   if(node.ports[P1] == NONE && node.ports[P2] == NONE) {
     //printf(" Release.%x,L%d,T%d,p%p ", iNode, line, unit->gid, ref);
     //printf("-");
