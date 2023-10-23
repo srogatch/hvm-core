@@ -564,7 +564,7 @@ __device__ void atomic_join(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
     Ptr  ste_ptr = *ste_ref;
     if (is_var(ste_ptr)) {
       Ptr* trg_ref = target(net, ste_ptr);
-      Ptr  trg_ptr = atomicAdd(trg_ref, 0);
+      Ptr  trg_ptr = *trg_ref;
       if (is_red(trg_ptr)) {
         Ptr neo_ptr = undir(trg_ptr);
         Ptr updated = atomicCAS(ste_ref, ste_ptr, neo_ptr);
@@ -582,7 +582,7 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
   while (true) {
     // Peek the target, which may not be owned by us.
     Ptr* t_ref = target(net, a_ptr);
-    Ptr  t_ptr = atomicAdd(t_ref, 0);
+    Ptr  t_ptr = *t_ref;
 
     // If target is a redirection, clear and move forward.
     if (is_red(t_ptr)) {
@@ -653,22 +653,23 @@ __device__ void atomic_subst(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr a_
   if (is_var(a_ptr)) {
     Ptr got = atomicCAS(target(net, a_ptr), a_dir, b_ptr);
     if (got == a_dir) {
-      atomicExch(a_ref, NONE);
+      *a_ref = NONE;
     } else if (is_var(b_ptr)) {
-      atomicExch(a_ref, redir(b_ptr));
+      *a_ref = redir(b_ptr);
       atomic_join(unit, net, book, a_ptr, a_ref, redir(b_ptr));
     } else if (is_pri(b_ptr)) {
-      atomicExch(a_ref, b_ptr);
+      *a_ref = b_ptr;
       atomic_link(unit, net, book, a_ptr, a_ref, b_ptr);
     }
   } else if (is_pri(a_ptr) && is_pri(b_ptr)) {
     if (a_ptr < b_ptr || put) {
       put_redex(unit, b_ptr, a_ptr); // FIXME: swapping bloats rbag; why?
     }
-    atomicExch(a_ref, NONE);
+    *a_ref = NONE;
   } else {
-    atomicExch(a_ref, NONE);
+    *a_ref = NONE;
   }
+  __threadfence();
 }
 
 __device__ void interact(Unit* unit, Net* net, Book* book) {
@@ -760,8 +761,9 @@ __device__ void interact(Unit* unit, Net* net, Book* book) {
     u32 cx_loc = dp_loc + unit->qid;
     u32 c1_loc = dp_loc + (unit->qid <= A2 ? 2 : 0);
     u32 c2_loc = dp_loc + (unit->qid <= A2 ? 3 : 1);
-    atomicExch(target(net, mkptr(VR1, cx_loc)), mkptr(unit->port == P1 ? VR1 : VR2, c1_loc));
-    atomicExch(target(net, mkptr(VR2, cx_loc)), mkptr(unit->port == P1 ? VR1 : VR2, c2_loc));
+    *target(net, mkptr(VR1, cx_loc)) = mkptr(unit->port == P1 ? VR1 : VR2, c1_loc);
+    *target(net, mkptr(VR2, cx_loc)) = mkptr(unit->port == P1 ? VR1 : VR2, c2_loc);
+    __threadfence();
     mv_ptr = mkptr(tag(a_ptr), cx_loc);
   }
   __syncwarp(unit->mask);
@@ -780,7 +782,8 @@ __device__ void interact(Unit* unit, Net* net, Book* book) {
 
   // If var_pri, the var must be a deref root, so we just subst
   if (rewrite && var_pri && unit->port == P1) {
-    atomicExch(target(net, a_ptr), b_ptr);
+    *target(net, a_ptr) = b_ptr;
+    __threadfence();
   }
   __syncwarp(unit->mask);
 
