@@ -317,7 +317,7 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
       //   }
       // }
       *unit->aloc = index;
-      __syncwarp(unit->mask);
+      //__syncwarp(unit->mask);
       return (begin + index - space) % HEAP_SIZE;
     }
   }
@@ -328,6 +328,7 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
 __device__ inline Ptr take(Ptr* ref) {
   Ptr got = atomicExch((u32*)ref, LOCK);
   while (got == LOCK) {
+    __nanosleep(512);
     got = atomicExch((u32*)ref, LOCK);
   }
   return got;
@@ -337,6 +338,7 @@ __device__ inline Ptr take(Ptr* ref) {
 __device__ inline bool replace(Ptr* ref, Ptr exp, Ptr neo) {
   Ptr got = atomicCAS((u32*)ref, exp, neo);
   while (got != exp) {
+    __nanosleep(512);
     got = atomicCAS((u32*)ref, exp, neo);
   }
   return true;
