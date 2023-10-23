@@ -144,8 +144,8 @@ typedef struct {
   u32   mask; // squad warp mask
   u32*  aloc; // where to alloc next node
   u32*  sm32; // shared 32-bit buffer
-  u64*  sm64; // shared 64-bit buffer
-  u64*  RBAG; // init of my redex bag
+  // u64*  sm64; // shared 64-bit buffer
+  // u64*  RBAG; // init of my redex bag
   u32*  rlen; // local redex bag length
   Wire* rbag; // local redex bag
 } Unit;
@@ -530,10 +530,10 @@ __device__ Unit init_unit(Net* net, bool flip) {
   unit.port = unit.tid % 2;
   unit.aloc = (u32*)(ALOC + unit.tid / SQUAD_SIZE); // locally cached
   unit.sm32 = (u32*)(SMEM + unit.tid / SQUAD_SIZE * SMEM_SIZE);
-  unit.sm64 = (u64*)(SMEM + unit.tid / SQUAD_SIZE * SMEM_SIZE);
-  unit.RBAG = net->bags + unit.uid * RBAG_SIZE;
-  unit.rlen = (u32*)(unit.RBAG + 0); // TODO: cache locally
-  unit.rbag = unit.RBAG + 1;
+  //unit.sm64 = (u64*)(SMEM + unit.tid / SQUAD_SIZE * SMEM_SIZE);
+  Wire* rbag = net->bags + unit.uid * RBAG_SIZE;
+  unit.rlen = (u32*)(rbag + 0); // TODO: cache locally
+  unit.rbag = rbag + 1;
   *unit.aloc = 0; // TODO: randomize or persist
 
   return unit;
