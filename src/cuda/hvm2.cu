@@ -170,6 +170,7 @@ void book_free_on_gpu(Book* gpu_book) {
 }
 
 #define PORT_WRITE atomicExch
+#define PORT_READ __ldcg
 
 // Runtime
 // -------
@@ -567,7 +568,7 @@ __device__ void atomic_join(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
     Ptr  ste_ptr = *ste_ref;
     if (is_var(ste_ptr)) {
       Ptr* trg_ref = target(net, ste_ptr);
-      Ptr  trg_ptr = __ldcg(trg_ref);
+      Ptr  trg_ptr = PORT_READ(trg_ref);
       if (is_red(trg_ptr)) {
         Ptr neo_ptr = undir(trg_ptr);
         Ptr updated = atomicCAS(ste_ref, ste_ptr, neo_ptr);
@@ -585,7 +586,7 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
   while (true) {
     // Peek the target, which may not be owned by us.
     Ptr* t_ref = target(net, a_ptr);
-    Ptr  t_ptr = __ldcg(t_ref);
+    Ptr  t_ptr = PORT_READ(t_ref);
 
     // If target is a redirection, clear and move forward.
     if (is_red(t_ptr)) {
