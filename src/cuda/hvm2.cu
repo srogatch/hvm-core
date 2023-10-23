@@ -418,10 +418,11 @@ __device__ void put_redex(Unit* unit, Ptr a_ptr, Ptr b_ptr) {
   bool b_era = is_era(b_ptr);
   bool a_ref = is_ref(a_ptr);
   bool b_ref = is_ref(b_ptr);
-  if ( a_era && b_era
-    || a_ref && b_era
-    || a_era && b_ref
-    || a_ref && b_ref) {
+  // if ( a_era && b_era
+  //   || a_ref && b_era
+  //   || a_era && b_ref
+  //   || a_ref && b_ref) {
+  if( (a_era || a_ref) && (b_era || b_ref) ) {
     unit->rwts += 1;
     return;
   }
@@ -659,6 +660,7 @@ __device__ void atomic_link(Unit* unit, Net* net, Book* book, Ptr a_ptr, Ptr* a_
 
     // If it is taken, we wait.
     else if (t_ptr == LOCK) {
+      __nanosleep(800);
       continue;
     }
 
