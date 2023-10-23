@@ -170,7 +170,7 @@ void book_free_on_gpu(Book* gpu_book) {
 }
 
 #define PORT_WRITE atomicExch
-#define PORT_READ __ldcg
+#define PORT_READ(x) atomicAdd(x, 0)
 
 // Runtime
 // -------
@@ -286,7 +286,7 @@ __host__ __device__ inline Node Node_nil() {
 // Checks if a node is nil
 __device__ inline bool Node_is_nil(Node* node) {
   //return node->ports[P1] == NONE && node->ports[P2] == NONE;
-  return __ldcg(reinterpret_cast<const unsigned long long*>(node->ports)) == 0;
+  return __ldca(reinterpret_cast<const unsigned long long*>(node->ports)) == 0;
 }
 
 // Gets a reference to the index/port Ptr on the net
