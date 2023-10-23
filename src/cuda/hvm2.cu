@@ -296,7 +296,8 @@ __device__ inline Ptr* at(Net* net, Val idx, Port port) {
 
 // Allocates one node in memory
 __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
-  u32 size4 = div(size, (u32)4) * 4;
+  //u32 size4 = div(size, (u32)4) * 4;
+  const u32 size4 = (size+3) & (~3u);
   u32 begin = unit->uid * AREA_SIZE;
   u32 space = 0;
   u32 index = *unit->aloc - (*unit->aloc % 4);
@@ -307,7 +308,16 @@ __device__ u32 alloc(Unit *unit, Net *net, u32 size) {
     index = (index + 4) % AREA_SIZE;
     space = succ && index > 0 ? space + 4 : 0;
     if (space == size4) {
+      // if(unit->qid == 0) {
+      //   const u32 nCollisions = i+1-size4/4;
+      //   if(nCollisions == 0) {
+      //     // printf(".");
+      //   } else {
+      //     printf(" %u ", nCollisions);
+      //   }
+      // }
       *unit->aloc = index;
+      __syncwarp(unit->mask);
       return (begin + index - space) % HEAP_SIZE;
     }
   }
