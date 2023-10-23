@@ -1,3 +1,4 @@
+// Eliminated atomicAdd when storing redexes
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -404,10 +405,23 @@ __device__ void put_redex(Unit* unit, Ptr a_ptr, Ptr b_ptr) {
     return;
   }
 
+  const uint8_t iThread = threadIdx.x & 31;
+  const uint32_t active = __activemask() & (unit->mask);
+  const uint8_t nActive = __popc(active);
+  const uint8_t firstThread = __ffs(active) - 1;
+  const bool isFirst = (iThread == firstThread);
+  const uint8_t nBefore = __popc(active & ((1u<<iThread)-1));
+  //printf(" %x,%d ", active, nBefore);
   // pushes redex to end of bag
-  u32 index = atomicAdd(unit->rlen, 1);
-  if (index < RBAG_SIZE - 1) {
-    unit->rbag[index] = mkwire(a_ptr, b_ptr);
+  //u32 index = atomicAdd(unit->rlen, 1);
+  u32 index;
+  if(isFirst) {
+    index = *(unit->rlen);
+    *(unit->rlen) += nActive;
+  }
+  index = __shfl_sync(active, index, firstThread);
+  if (index + nBefore < RBAG_SIZE - 1) {
+    unit->rbag[index + nBefore] = mkwire(a_ptr, b_ptr);
   } else {
     printf("ERROR: PUSHED TO FULL TBAG (NOT IMPLEMENTED YET)\n");
   }
