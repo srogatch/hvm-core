@@ -121,7 +121,7 @@ typedef struct {
 } Node;
 
 // Wires are pairs of pointers
-typedef u64 Wire;
+typedef uint2 Wire;
 
 // An interaction net 
 typedef struct {
@@ -257,17 +257,19 @@ __host__ __device__ inline Ptr undir(Ptr ptr) {
 
 // Creates a new wire
 __host__ __device__ inline Wire mkwire(Ptr p1, Ptr p2) {
-  return (((u64)p1) << 32) | ((u64)p2);
+  return {p2, p1}; // (((u64)p1) << 32) | ((u64)p2);
 }
 
 // Gets the left element of a wire
 __host__ __device__ inline Ptr wire_lft(Wire wire) {
-  return wire >> 32;
+  //return wire >> 32;
+  return wire.y;
 }
 
 // Gets the right element of a wire
 __host__ __device__ inline Ptr wire_rgt(Wire wire) {
-  return wire & 0xFFFFFFFF;
+  //return wire & 0xFFFFFFFF;
+  return wire.x;
 }
 
 // Creates a new node
@@ -398,12 +400,15 @@ __device__ Wire pop_redex(Unit* unit) {
     *unit->rlen = rlen-1;
   }
   __syncwarp(unit->mask);
-
-  if (unit->qid <= A2) {
-    return mkwire(wire_lft(redex), wire_rgt(redex));
-  } else {
-    return mkwire(wire_rgt(redex), wire_lft(redex));
-  }
+  
+  return {unit->qid <= A2 ? redex.x : redex.y, unit->qid <= A2 ? redex.y : redex.x};
+  // Ptr sides[2] = {wire_lft(redex), wire_rgt(redex)};
+  // return mkwire(sides[unit->qid <= A2 ? 0 : 1], sides[unit->qid <= A2 ? 1 : 0]);
+  // if (unit->qid <= A2) {
+  //   return mkwire(wire_lft(redex), wire_rgt(redex));
+  // } else {
+  //   return mkwire(wire_rgt(redex), wire_lft(redex));
+  // }
 }
 
 // Puts a redex
@@ -421,7 +426,7 @@ __device__ void put_redex(Unit* unit, Ptr a_ptr, Ptr b_ptr) {
     return;
   }
 
-  const uint8_t iThread = threadIdx.x & 31;
+  const uint8_t iThread = unit->tid & 31;
   const uint32_t active = __activemask() & (unit->mask);
   const uint8_t nActive = __popc(active);
   const uint8_t firstThread = __ffs(active) - 1;
@@ -568,8 +573,8 @@ __device__ void share_redexes(Unit* unit, Net* net, Book* book, u32 tick, bool f
   u32  b_sid = side ? a_sid - shift : a_sid + shift;
   u32  a_uid = sid_to_uid(a_sid, flip);
   u32  b_uid = sid_to_uid(b_sid, flip);
-  u64* a_len = net->bags + a_uid * RBAG_SIZE;
-  u64* b_len = net->bags + b_uid * RBAG_SIZE;
+  u64* a_len = (u64*)(net->bags + a_uid * RBAG_SIZE);
+  u64* b_len = (u64*)(net->bags + b_uid * RBAG_SIZE);
   u32  sp_id = unit->tid % SQUAD_SIZE + side * SQUAD_SIZE;
   split(sp_id, a_len, a_len+1, b_len, b_len+1, RBAG_SIZE);
 }
@@ -1096,8 +1101,8 @@ __host__ const char* show_ptr(Ptr ptr, u32 slot) {
 void print_net(Net* net) {
   printf("Bags:\n");
   for (u32 i = 0; i < BAGS_SIZE; ++i) {
-    if (i % RBAG_SIZE == 0 && net->bags[i] > 0) {
-      printf("- [%07X] LEN=%llu\n", i, net->bags[i]);
+    if (i % RBAG_SIZE == 0 && *reinterpret_cast<u64*>(net->bags+i) != 0) {
+      printf("- [%07X] LEN=%llu\n", i, *reinterpret_cast<u64*>(net->bags+i));
     } else if (i % RBAG_SIZE >= 1) {
       //Ptr a = wire_lft(net->bags[i]);
       //Ptr b = wire_rgt(net->bags[i]);
