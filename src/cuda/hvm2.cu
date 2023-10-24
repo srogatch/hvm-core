@@ -176,57 +176,57 @@ void book_free_on_gpu(Book* gpu_book) {
 // -------
 
 // Integer ceil division
-__host__ __device__ inline u32 div(u32 a, u32 b) {
+constexpr __host__ __device__ inline u32 div(u32 a, u32 b) {
   return (a + b - 1) / b;
 }
 
 // Creates a new pointer
-__host__ __device__ inline Ptr mkptr(Tag tag, Val val) {
+constexpr __host__ __device__ inline Ptr mkptr(Tag tag, Val val) {
   return (val << 4) | ((Val)tag);
 }
 
 // Gets the tag of a pointer
-__host__ __device__ inline Tag tag(Ptr ptr) {
+constexpr __host__ __device__ inline Tag tag(Ptr ptr) {
   return (Tag)(ptr & 0xF);
 }
 
 // Gets the value of a pointer
-__host__ __device__ inline Val val(Ptr ptr) {
+constexpr __host__ __device__ inline Val val(Ptr ptr) {
   return (Val)(ptr >> 4);
 }
 
 // Is this pointer a variable?
-__host__ __device__ inline bool is_var(Ptr ptr) {
+constexpr __host__ __device__ inline bool is_var(Ptr ptr) {
   return ptr != 0 && tag(ptr) >= VR1 && tag(ptr) <= VR2;
 }
 
 // Is this pointer a redirection?
-__host__ __device__ inline bool is_red(Ptr ptr) {
+constexpr __host__ __device__ inline bool is_red(Ptr ptr) {
   return tag(ptr) >= RD1 && tag(ptr) <= RD2;
 }
 
 // Is this pointer a constructor?
-__host__ __device__ inline bool is_ctr(Ptr ptr) {
+constexpr __host__ __device__ inline bool is_ctr(Ptr ptr) {
   return tag(ptr) >= CT0 && tag(ptr) < CT5; // FIXME: CT5 excluded
 }
 
 // Is this pointer an eraser?
-__host__ __device__ inline bool is_era(Ptr ptr) {
+constexpr __host__ __device__ inline bool is_era(Ptr ptr) {
   return tag(ptr) == ERA;
 }
 
 // Is this pointer a reference?
-__host__ __device__ inline bool is_ref(Ptr ptr) {
+constexpr __host__ __device__ inline bool is_ref(Ptr ptr) {
   return tag(ptr) == REF;
 }
 
 // Is this pointer a main port?
-__host__ __device__ inline bool is_pri(Ptr ptr) {
+constexpr __host__ __device__ inline bool is_pri(Ptr ptr) {
   return is_ctr(ptr) || is_era(ptr) || is_ref(ptr);
 }
 
 // Is this pointer carrying a location (that needs adjustment)?
-__host__ __device__ inline bool has_loc(Ptr ptr) {
+constexpr __host__ __device__ inline bool has_loc(Ptr ptr) {
   return is_ctr(ptr) || is_var(ptr);
 }
 
@@ -717,11 +717,11 @@ __device__ void interact(Unit* unit, Net* net, Book* book) {
 
   // Defines type of interaction
   bool rewrite = a_ptr != 0 && b_ptr != 0;
-  bool var_pri = rewrite && is_var(a_ptr) && is_pri(b_ptr) && unit->port == P1;
-  bool era_ctr = rewrite && is_era(a_ptr) && is_ctr(b_ptr);
-  bool ctr_era = rewrite && is_ctr(a_ptr) && is_era(b_ptr);
-  bool con_con = rewrite && is_ctr(a_ptr) && is_ctr(b_ptr) && tag(a_ptr) == tag(b_ptr);
-  bool con_dup = rewrite && is_ctr(a_ptr) && is_ctr(b_ptr) && tag(a_ptr) != tag(b_ptr);
+  const bool var_pri = rewrite && is_var(a_ptr) && is_pri(b_ptr) && unit->port == P1;
+  const bool era_ctr = rewrite && is_era(a_ptr) && is_ctr(b_ptr);
+  const bool ctr_era = rewrite && is_ctr(a_ptr) && is_era(b_ptr);
+  const bool con_con = rewrite && is_ctr(a_ptr) && is_ctr(b_ptr) && tag(a_ptr) == tag(b_ptr);
+  const bool con_dup = rewrite && is_ctr(a_ptr) && is_ctr(b_ptr) && tag(a_ptr) != tag(b_ptr);
 
   // Local rewrite variables
   Ptr  ak_dir; // dir to our aux port
@@ -2492,6 +2492,8 @@ int main() {
   // Uploads net and book to GPU
   Net* gpu_net = net_to_gpu(cpu_net);
   Book* gpu_book = init_book_on_gpu(BOOK_DATA, BOOK_DATA_SIZE);
+
+  //cudaSetDeviceFlags(cudaDeviceScheduleSpin | cudaDeviceMapHost | cudaDeviceLmemResizeToMax);
 
   // Marks init time
   struct timespec start, end;
