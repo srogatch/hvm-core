@@ -414,10 +414,10 @@ __device__ Wire pop_redex(Unit* unit) {
 // Puts a redex
 __device__ void put_redex(Unit* unit, Ptr a_ptr, Ptr b_ptr) {
   // optimization: avoids pushing non-reactive redexes
-  bool a_era = is_era(a_ptr);
-  bool b_era = is_era(b_ptr);
-  bool a_ref = is_ref(a_ptr);
-  bool b_ref = is_ref(b_ptr);
+  const bool a_era = is_era(a_ptr);
+  const bool b_era = is_era(b_ptr);
+  const bool a_ref = is_ref(a_ptr);
+  const bool b_ref = is_ref(b_ptr);
   // if ( a_era && b_era
   //   || a_ref && b_era
   //   || a_era && b_ref
